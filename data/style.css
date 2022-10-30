@@ -74,11 +74,13 @@ all contained elements*/
 #display-control {
   grid-column: 2 / 3;
   grid-row: 3;
+  padding: 0em 0.3em;
 }
 
 #sample-control {
   grid-column: 3 / 4;
   grid-row: 3;
+  padding: 0em 0.3em;
 }
 
 /* Styling for toggle-switches */
@@ -140,7 +142,7 @@ span {
 }
 
 .slider-setting {
-  display: table-row;
+  display: inline-block;
   height: 1.3em;
   line-height: 1em;
   font-size: 0.8em;
@@ -150,10 +152,10 @@ span {
   -webkit-appearance: none;
   /* Override default CSS styles */
   border-radius: 0.65em;
-  margin-left: 1vw;
+  /*margin-left: 1vw;*/
   width: min(9vw, 15vh);
   height: 100%;
-  display: table-cell;
+  display: block;/*table-cell;*/
   padding: 0;
   vertical-align: middle;
   border-width: 1px;

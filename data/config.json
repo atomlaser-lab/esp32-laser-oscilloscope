@@ -6,7 +6,7 @@
   "host_channel": 3,
   "ssid": "AtomFibre",
   "password": "becbecbec",
-  "default_duration": 40,
+  "default_duration": 80,
   "default_resolution": 1,
   "default_ip": "192.168.1.184"
 }

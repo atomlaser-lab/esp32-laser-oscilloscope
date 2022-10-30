@@ -29,14 +29,21 @@
         <div class="thumb"></div>
       </button>
     </label>
+
+    <label class="live-switch">
+      <span>HOLD</span>
+      <button id="hold">
+        <div class="thumb"></div>
+      </button>
+    </label>
   </div>
 
   <div class="control-pane" id="display-control">
     <h2>Display</h2>
 
     <label class="slider-setting">
-      <span>DIV</span>
-      <input type="range" min="0" max="10" value="3" id="div-range" step="1" oninput="updateDisplaySettings('div')" onchange="saveDisplaySettings()">
+      <span>DIV</span><span id="div-text">ms</span><br />
+      <input type="range" min="0" max="12" value="3" id="div-range" step="1" oninput="updateDisplaySettings('div')" onchange="saveDisplaySettings()">
       <!-- DIV range values are translated to timescales in monitor.js -->
     </label><br />
 
@@ -65,15 +72,15 @@
     <!-- Note the use of 'oninput' in the previous pane, as this updates while dragging, but 'onchange' in this one (which updates once released) -->
 
     <label class="slider-setting">
-      <span>DURATION</span>
-      <span id="duration-text">50ms</span>
-      <input type="range" id="sample-duration" onchange="updateSampleSettings(true)" min="10" max="200" step="1" value="50" oninput="durText.innerText=this.value">
+      <span>DURATION:&nbsp</span>
+      <span id="duration-text">50ms</span><br/>
+      <input type="range" id="sample-duration" onchange="updateSampleSettings(true)" min="30" max="200" step="1" value="50" oninput="durText.innerText=`${this.value}ms`">
     </label><br />
 
     <label class="slider-setting">
-      <span>RESOLUTION</span>
-      <span id="resolution-text">50ms</span>
-      <input type="range" id="sample-resolution" onchange="updateSampleSettings(true)" min="0.5" max="30" step="0.1" value="1" oninput="resText.innerText=this.value">
+      <span>RESOLUTION:&nbsp</span>
+      <span id="resolution-text">50ms</span><br />
+      <input type="range" id="sample-resolution" onchange="updateSampleSettings(true)" min="0.1" max="30" step="0.1" value="1" oninput="resText.innerText=`${this.value}ms`">
     </label><br />
   </div>
 

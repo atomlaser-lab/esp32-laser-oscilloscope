@@ -1,4 +1,4 @@
-/* ESP8266 Remote Laser Oscilloscope and Monitor for
+/* ESP32 Remote Laser Oscilloscope and Monitor for
 MOGLabs Diode Laser Controller
 
 Misc notes:
@@ -7,26 +7,35 @@ Misc notes:
 */
 
 #include <Arduino.h>     // Framework
-#include <ESP8266WiFi.h> // https://arduino-esp8266.readthedocs.io/en/latest/esp8266wifi/readme.html
+#include <WiFi.h>
 #include <LittleFS.h>    // File-system
 // https://github.com/me-no-dev/ESPAsyncWebServer
 #include <ArduinoJSON.h> // https://arduinojson.org/
 #include <AsyncJson.h>   // For handling JSON packets
-#include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 
+// ON ESp32 board, pins 16-33 are all good.
+
 // Pin mappings
+/* ESP32 has 2 ADC pins. When WiFi is in use, only ADC1 pins (not ADC2 pins) can be used. */
 const int LED_PIN = 2; // For LED only, LOW is on and HIGH is off.
-const int TRIG_PIN = D5;
-const int SLOW_LOCK_PIN = D1;
-const int FAST_LOCK_PIN = D2;
+const int TRIG_PIN = 32;
+const int SLOW_LOCK_PIN = 33;
+const int FAST_LOCK_PIN = 34;
+const int INPUT_PIN = 35;
+const int HOLD_PIN = 26;
+const int PZT_DAC_PIN = 25;
 
 // Trigger state (Note 'HIGH' and 'LOW' are just aliases for '1' and '0')
 bool trig = LOW;
+bool slow_lock = false;
+bool fast_lock = true;
+bool hold = false;
 
 /* There are two restrictions on the sample resolution and duration:
   1. Calling analogRead too frequently on the ESP8266 interferes with its
-  WiFi connection (known bug, see e.g. https://arduino.stackexchange.com/questions/56399/cant-add-more-code-to-loop-when-use-server-handleclient).
+  WiFi connection (known bug, see e.g. https://arduino-esp8266.readthedocs.io/en/latest/reference.html#analog-input or
+  https://arduino.stackexchange.com/questions/56399/cant-add-more-code-to-loop-when-use-server-handleclient).
 
   2. The ESP has limited memory
 
@@ -79,8 +88,10 @@ void setSampleSettings(double resolution, double duration) {
   new packet. Note arguments are in milliseconds but next_resolution
   and sample_duration are in microseconds.*/
   next_resolution = max((int)(resolution * 1000), 100); //Hard limit 0.1ms res
-  sample_duration = (int) min(max(duration * 1000, 2.0 * next_resolution), 200000000.0);
-  /*Max 20sec and minimum *twice* the *current* resolution*/
+  sample_duration = (int) min(max(
+    max(duration * 1000, 2.0 * next_resolution), 30000.0),
+    20000000.0); // Hard min 30ms and max 20sec, else ESP can become unresponsive
+  /*Also enforce duration > 2*resolution (to ensure >1 sample)*/
   Serial.println(" Sampling settings set to:");
   Serial.printf("  Resolution: %.1f ms\n", next_resolution / 1000.0);
   Serial.printf("  Duration: %.1f ms\n", sample_duration / 1000.0);
@@ -95,18 +106,19 @@ void settingsHandler(AsyncWebServerRequest *request, JsonVariant &json) {
 
 // Setup code, run once upon restart.
 void setup() {
-  ESP.eraseConfig(); // Erase previous WiFi config (unsure if necessary)
-
   // Pins
   pinMode(LED_PIN, OUTPUT);
   pinMode(TRIG_PIN, INPUT);
   pinMode(SLOW_LOCK_PIN, OUTPUT);
   pinMode(FAST_LOCK_PIN, OUTPUT);
-  pinMode(A0, INPUT);
+  pinMode(HOLD_PIN, OUTPUT);
+  pinMode(INPUT_PIN, INPUT);
+  pinMode(PZT_DAC_PIN, OUTPUT);
 
   // Initial pin outputs
   digitalWrite(SLOW_LOCK_PIN, LOW); // Must begin low
   digitalWrite(FAST_LOCK_PIN, LOW);
+  digitalWrite(HOLD_PIN, LOW);
 
   // Indicate that board is running
   digitalWrite(LED_PIN, LOW); // Inverted: LOW is on.
@@ -233,28 +245,45 @@ void setup() {
 
   // Handle commands (square bracket notation begins an anonymous function)
   server.on("/status", HTTP_GET, [&name](AsyncWebServerRequest *request) {
-    StaticJsonDocument<200> statusDoc;
+    StaticJsonDocument<300> statusDoc;
     statusDoc["name"] = "TestName"; //&name;
-    statusDoc["slow"] = (bool)digitalRead(SLOW_LOCK_PIN);
-    statusDoc["fast"] = (bool)digitalRead(FAST_LOCK_PIN);
+    statusDoc["slow"] = slow_lock;
+    statusDoc["fast"] = fast_lock;
+    statusDoc["hold"] = hold;
+    /* Would be convenient to just read the state of the pins directly,
+    but this is unreliable as they are set to OUTPUT mode.*/
     String statusStr = "";
     serializeJson(statusDoc, statusStr);
     request->send(200, "text/plain", statusStr);
   });
   server.on("/enable_slow", HTTP_POST, [](AsyncWebServerRequest *request) {
     digitalWrite(SLOW_LOCK_PIN, HIGH);
+    slow_lock = true;
     request->send(200);
   });
   server.on("/enable_fast", HTTP_POST, [](AsyncWebServerRequest *request) {
     digitalWrite(FAST_LOCK_PIN, HIGH);
+    fast_lock = true;
     request->send(200);
   });
   server.on("/disable_fast", HTTP_POST, [](AsyncWebServerRequest *request) {
     digitalWrite(FAST_LOCK_PIN, LOW);
+    fast_lock = false;
     request->send(200);
   });
   server.on("/disable_slow", HTTP_POST, [](AsyncWebServerRequest *request) {
     digitalWrite(SLOW_LOCK_PIN, LOW);
+    slow_lock = false;
+    request->send(200);
+  });
+  server.on("/enable_hold", HTTP_POST, [](AsyncWebServerRequest *request) {
+    digitalWrite(HOLD_PIN, HIGH);
+    hold = true;
+    request->send(200);
+  });
+  server.on("/disable_hold", HTTP_POST, [](AsyncWebServerRequest *request) {
+    digitalWrite(HOLD_PIN, LOW);
+    hold = false;
     request->send(200);
   });
   server.on("/get_sample_settings", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -306,19 +335,19 @@ void setup() {
 
   // Start server
   server.begin();
-  packet_start = micros64(); // Will be a slight delay for the first packet.
+  packet_start = micros(); // Will be a slight delay for the first packet.
 }
 
 // Run repeatedly after setup()
 void loop() {
   if (ws.count() == 0) { //Nobody's listening, wait.
     // Otherwise will not allow the page to load.
-    packet_start = micros64();
+    packet_start = micros();
     N=0;
     return;
   }
-  // Note micros64 will eventually roll over.
-  elapsed = micros64() - packet_start;
+  // Note micros will eventually roll over.
+  elapsed = micros() - packet_start;
   // Check trigger
   if (digitalRead(TRIG_PIN) != trig) {
     trig = !trig;
@@ -330,29 +359,34 @@ void loop() {
     }
   }
   if (elapsed >= time_resolution * N) {
+    // TEMPORARY: write sin signal to PZT shift
+    dacWrite(PZT_DAC_PIN, 128 + (int)(127*sin(micros()/1000000.0)));
     // Record a new measurement
-    input_buffer[N++] = (uint8_t)(analogRead(A0) / 4);
+    input_buffer[N++] = (uint8_t)(analogRead(INPUT_PIN) / 16);
+    /* Note: ESP32 ADC has 12-bit resolution, while ESP8266 has only 10-bit.
+    To reduce to 1 byte, we need to divide by 4 on ESP8266 but 16 on ESP32. */
     // Check if finished packet
     if ((elapsed >= sample_duration) || N >= buffer_size) {
       // Send data
       ws.cleanupClients();  // Release improperly-closed connections
-      // Send metadata
-      StaticJsonDocument<200> heraldDoc; // Meta-data to precede measurement packet
-      heraldDoc["start"] = (double)(packet_start / 1000.0);
-      heraldDoc["elapsed"] = (double)(elapsed / 1000.0);
-      heraldDoc["trigTime"] = trig_time / 1000.0; // 0 if no trigger occurred.
-      String heraldStr;
-      serializeJson(heraldDoc, heraldStr);
-      ws.textAll(heraldStr);
-      // Send measurement packet
-      ws.binaryAll(input_buffer, N); /* Final argument is number of
-        BYTES to send */
-      delay(10); // analogRead interferes with the WiFi, so give it a break.
+      if (ws.availableForWriteAll()) {
+        // Send metadata
+        StaticJsonDocument<200> heraldDoc; // Meta-data to precede measurement packet
+        heraldDoc["start"] = (double)(packet_start / 1000.0);
+        heraldDoc["elapsed"] = (double)(elapsed / 1000.0);
+        heraldDoc["trigTime"] = trig_time / 1000.0; // 0 if no trigger occurred.
+        String heraldStr;
+        serializeJson(heraldDoc, heraldStr);
+        ws.textAll(heraldStr);
+        // Send measurement packet
+        ws.binaryAll(input_buffer, N); /* Final argument is number of
+          BYTES to send. Note  */
+      }
       // Start new packet
       N = 0;
       trig_time = 0;
       time_resolution = next_resolution;
-      packet_start = micros64();
+      packet_start = micros();
     }
   }
   /* The ESP8266 runs background processes

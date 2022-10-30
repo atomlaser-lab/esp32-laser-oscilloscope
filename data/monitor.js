@@ -18,6 +18,7 @@ const resSlider = document.getElementById("sample-resolution");
 const durationSlider = document.getElementById("sample-duration");
 const resText = document.getElementById("resolution-text");
 const durText = document.getElementById("duration-text");
+const divText = document.getElementById("div-text");
 
 // Could use wss:// (secure socket).
 const gateway = `ws://${window.location.hostname}/ws`;
@@ -27,11 +28,8 @@ let websocket;
 const maxTriggers = 20; /* Number of triggers' worth of data we remember.*/
 let packets = []; // History of received herald+data packets.
 let triggers = []; // Indices of trigger packets
-let newPackets = []; // Since last display update.
-let newTriggers = [];
-/* newPackets and newTriggers are particularly useful when the tab is hidden,
-so that the data can be drawn when visible again. Otherwise, they will usually
-only contain a single packet, since device framerate > packet rate.*/
+let lastDrawnPacket = -1; // Index of most recently drawn packet (in packets)
+let lastDrawnTrigger = -1; // " " (in triggers)
 let herald = null; // Pending herald
 
 // Drawing
@@ -48,11 +46,6 @@ let needsReposition = true; // Redraw canvas with new position.
 
 let pendingDisplayUpdate = 0; /* Nonzero long integer request id of a
 requested AnimationFrame, or zero if no redraw pending.*/
-let pendingSampleSettingsUpdate = false;
-/* Updating slider values triggers onChange, which calls
-        this function. We avoided infinite regress by having flagged
-        that an update was already pending. That update is now complete*/
-pendingSampleSettingsUpdate = false;
 
 function requestDisplayUpdate() {
   if (!pendingDisplayUpdate) {
@@ -152,6 +145,7 @@ async function updateStatus() {
         // Update switch states
         slowSwitch.setState(status.slow);
         fastSwitch.setState(status.fast);
+        holdSwitch.setState(status.hold);
       } else {
         console.warn("Status check failed.");
       }
@@ -211,7 +205,12 @@ async function updateSampleSettings(write = false) {
 /* SETTINGS */
 function saveDisplaySettings() {
   if (useCookies.checked) {
-    document.cookie = `max-age=${365 * 24 * 3600};persist=${persistSlider.value};pos=${posSlider.value};div=${divSlider.value};thick=${thickSlider.value};use-cookies=true`;
+    document.cookie = `max-age=${365 * 24 * 3600}`;
+    document.cookie = `persist=${persistSlider.value}`;
+    document.cookie = `pos=${posSlider.value}`;
+    document.cookie = `div=${divSlider.value}`;
+    document.cookie = `thick=${thickSlider.value}`;
+    document.cookie = `use-cookies=true`;
   }
 }
 
@@ -219,7 +218,8 @@ function checkCookies() {
   if (useCookies.checked) {
     saveDisplaySettings();
   } else {
-    document.cookie = `max-age=${365 * 24 * 3600};use-cookies=false`;
+    document.cookie = `max-age=${365 * 24 * 3600}`;
+    document.cookie = `use-cookies=false`;
   }
 }
 
@@ -236,20 +236,10 @@ function onMessage(event) { // Handle Websocket message
   if (event.data instanceof ArrayBuffer) { // Measurement packet (binary)
     if (herald) { // Make sure a herald came first. Otherwise ignore.
       herald.measurements = new Uint8Array(event.data);
-      const i = newPackets.push(herald) - 1; //Record packet and get index
-      if (herald.trigTime !== 0) { //TODO: use NaN or something.
-        newTriggers.push(i);
-        /* Now ensure the stored number of NEW trigger cycles is below
-        maxTriggers. The total number of trigger cycles is culled in
-        updateDisplay; however, new packets must be culled here to avoid
-        them overaccumulating while the tab is hidden (during which 
-        AnimationFrame callbacks are not executed) */
-        // Do this by removing the oldest trigger and corresponding packet(s)
-        if (newTriggers.length > maxTriggers) {
-          newPackets = newPackets.slice(newTriggers.shift()+1);
-          // Decrease each trigger index by 1 accordingly.
-          newTriggers = newTriggers.map(j => j - 1);
-        }
+      const i = packets.push(herald) - 1; //Record packet and get index
+      if (herald.trigTime !== 0) { //TODO: use NaN or something instead of 0.
+        triggers.push(i);
+        cullData();
       }
       herald = null; // Ready for next herald
       requestDisplayUpdate();
@@ -259,19 +249,32 @@ function onMessage(event) { // Handle Websocket message
   }
 }
 
+function cullData() { // Remove excess data if required.
+  if (triggers.length > maxTriggers + 10) { //TODO: add data-length condition too
+    // Remove any triggers/packets older than maxTriggers
+    const oldestTriggerToKeep = triggers.length - maxTriggers - 1; // Can assume >= 0
+    const oldestPacketToKeep = triggers[oldestTriggerToKeep - 1] + 1; /* We 
+    remove all packets up to the most recent removed trigger packet.
+    */
+    packets = packets.slice(oldestPacketToKeep);
+    triggers = triggers.slice(oldestTriggerToKeep).map(i => i - oldestPacketToKeep);
+
+    lastDrawnPacket -= oldestPacketToKeep;
+    lastDrawnTrigger -= oldestTriggerToKeep;
+  }
+}
+
 // Note that updateDisplay is only called when necessary.
 const updateDisplay = (() => {
   /* Persistent drawing variables (NOTE 'width' EXCLUDES LEFT MARGIN) */
-  let height, width, leftOffset, underlay, px_per_ms;
+  let height, width, leftOffset, underlay, px_per_ms, vOffset;
 
   // Div timescale options
-  const divScales = [10, 25, 50, 100, 250, 500]; //milliseconds
+  const divScales = [1,5,10, 25, 50, 100, 250, 500]; //milliseconds
   divSlider.max = divScales.length - 1;
   const numDivs = 6; // Horizontal divs
 
-  // Colour for data
-  dataCtx.strokeStyle = "#ffff00";
-
+  dataCtx.globalAlpha = 1;
   // For gridlines and trigger position line.
   ctx.globalAlpha = 1;
   ctx.lineWidth = "1px";
@@ -279,7 +282,7 @@ const updateDisplay = (() => {
   // Private helper function for drawing a packet
   function renderPacket(packet, trigtime) {
     // TODO: highlight clipped signals in red.
-    dataCtx.strokeStyle="#ffff00";
+    dataCtx.strokeStyle = "#ffff00"; // Colour for data
     const meas = packet.measurements;
     const px_per_datapoint = px_per_ms * packet.elapsed / meas.length;
     const offset = px_per_ms * (packet.start - trigtime);
@@ -292,21 +295,8 @@ const updateDisplay = (() => {
     dataCtx.stroke();
   }
 
-  // Helper to move new packets to the existing storage
-  function storeNewPackets() {
-    const prevNumPackets = packets.length;
-    for (const packet of newPackets) {
-      packets.push(packet);
-    }
-    for (const index of newTriggers) {
-      triggers.push(index + prevNumPackets);
-    }
-    newPackets = [];
-    newTriggers = [];
-  }
-
   return async () => {
-    if (needsResize) { // Triggered by canvas resize or change to DIV scale.
+    if (needsResize) { // Triggered by canvas resize or zoom/dpi change
       // Resize requires full re-render/draw, so force the corresponding flags.
       needsDataRender = true;
       needsReposition = true;
@@ -325,13 +315,13 @@ const updateDisplay = (() => {
       /* RenderingContext2D considers a line to be *centred* at a coordinate, so
       offset by 0.5px to get clear lines when drawn at integer pixel coordinates.*/
       ctx.translate(0.5, 0.5);
-      /* Do the same for the data-rendering canvas. This canvas has twice the
+      /* The data-rendeing canvas has twice the
       width, and the centre corresponds with the trigger point. Its origin is
-      set at the middle, vOffset from the bottom. */
-      const vOffset = height / 10; // Distance of 0V from the bottom
+      set at the middle, vOffset from the top. The vertical axis is *not* flipped, to make it easier to copy it right-way-up to the main canvas. */
+      vOffset = height / 10; // Distance of 0V from the bottom
       hiddenDataCanvas.width = 2 * width;
       hiddenDataCanvas.height = 2 * height;
-      dataCtx.setTransform(1, 0, 0, -1, width, height);
+      dataCtx.setTransform(1, 0, 0, 1, width, vOffset);
       dataCtx.scale(dpr, dpr);
       dataCtx.translate(0.5, 0.5);
 
@@ -379,87 +369,71 @@ const updateDisplay = (() => {
       underlay = await createImageBitmap(canvas, { imageOrientation: "flipY" });
       needsResize = false;
     }
-    //  Cull any packets older than maxTriggers
-    const totalTriggers = triggers.length + newTriggers.length;
-    if (totalTriggers > maxTriggers) {
-      // Note we can assume newTriggers.length <= maxTriggers
-      let numKeep = maxTriggers - newTriggers.length //Can be negative
-      numKeep = Math.min(Math.max(numKeep, 0), triggers.length);
-      const trigIndexShift = triggers.length - numKeep;
-      const oldestKeepPacket = triggers[trigIndexShift] || packets.length;
-      packets = packets.slice(oldestKeepPacket);
-      triggers = triggers.slice(triggers.length-numKeep).map(i => i - oldestKeepPacket);
-    }
 
     if (needsDataRender) { // Redraw *all* data to hidden canvas
       // Re-compute data scale
-      px_per_ms = width / (divScales[divSlider.value] * numDivs);
+      const divInterval = divScales[divSlider.value];
+      divText.innerText = `${divInterval}ms`;
+      px_per_ms = width / (divInterval * numDivs);
 
-      /* Collate all new packets */
-      storeNewPackets();
-
-      // Now draw all packets, back-to-front
-      dataCtx.lineWidth = `${thickSlider.value}px`;
-      let i = 0; // Packet index
-      const persist = Number(persistSlider.value);
-      dataCtx.globalAlpha = Math.pow(persist, triggers.length);
-      // TODO: potential off-by-one error in line above.
-      for (const trigPacketIndex of triggers) {
-        //TODO: draw forwards from trigger as well.
-        const trigTime = packets[trigPacketIndex].trigTime;
-        const minTime = trigTime - px_per_ms * width;
-        const maxTime = trigTime + px_per_ms * width;
-        dataCtx.globalAlpha /= persist;
-        while (i < trigPacketIndex) {
-          const packet = packets[i++];
-          if ((packet.start < maxTime) && (packet.start + packet.elapsed > minTime)) {
-            renderPacket(packet, trigTime);
-          }
-        }
-      }
+      // Say all packets/triggers need to be (re)drawn.
+      lastDrawnPacket = -1;
+      lastDrawnTrigger = -1;
 
       needsDataRender = false;
     }
-    /* Always add new data to the display on every update.
-    newPackets may already be empty, if needsDataRender occurred.*/
-    dataCtx.globalAlpha = 1;
-    const firstNewTrigIndex = (newTriggers.length > 0) ? newTriggers[0] : newPackets.length;
-    let i; // Packet index
-    if (triggers.length > 0) { // There is a previous trigger to draw from.
-      const prevTrigTime = packets[triggers[triggers.length - 1]].trigTime;
-      for (i = 0; i < firstNewTrigIndex; i++) {
-        renderPacket(newPackets[i], prevTrigTime, 1);//TODO: check within bounds
-      }
-    } else {
-      i = firstNewTrigIndex;
-    }
-    // Now draw new trigger cycle packets
-    //dataCtx.fillStyle = window.getComputedStyle(canvas).backgroundColor;
-    dataCtx.fillStyle = `rgba(255,255,255,${persistSlider.value})`;
-    dataCtx.globalAlpha = 1;
-    for (const trigPacketIndex of newTriggers) {
-      // Fade previous data
-      dataCtx.globalCompositeOperation = "destination-in";
-      dataCtx.fillRect(0, 0, hiddenDataCanvas.width, height);
-      dataCtx.globalCompositeOperation = "source-over";
-      // Draw packets
-      const trigTime = newPackets[trigPacketIndex].trigTime;
-      const minTime = trigTime - px_per_ms * width;
+
+    /* Draw all packets waiting to be drawn */
+    dataCtx.lineWidth = thickSlider.value;
+    if (lastDrawnTrigger >= 0) { // There's a previous trigger to draw from.
+      let trigTime = packets[triggers[lastDrawnTrigger]].trigTime;
+      // Packet to start from
+      let packetIndex = (lastDrawnPacket < 0) ? 0 : lastDrawnPacket;
+      // Packet to draw up to (exclusive) (stops at new trig or end of packets)
+      const stopIndex = (lastDrawnTrigger < triggers.length - 1) ? triggers[lastDrawnTrigger + 1] : packets.length;
+      // Rightmost time on screen
       const maxTime = trigTime + px_per_ms * width;
-      while (i < trigPacketIndex) { //Note i carries over from firstNewTrigIndex
-        const packet = packets[i++];
-        if (packet.start < maxTime) {
-          renderPacket(packet, trigTime);
-        }
+      while (packetIndex < stopIndex) {
+        // Continue previous trigger (forwards only)
+        const packet = packets[packetIndex++];
+        if (packet.start > maxTime) { break; }
+        renderPacket(packet, trigTime);
       }
+      lastDrawnPacket = packetIndex;
     }
+    //Any new trigger cycles
+    let trigIndex = Math.max(lastDrawnTrigger + 1, 0);
+    const trigCount = triggers.length;
+    for (trigIndex; trigIndex < trigCount; trigIndex++) {
+      // Fade previous data
+      dataCtx.fillStyle = `rgba(255,255,255,${persistSlider.value})`;
+      //dataCtx.fillStyle = window.getComputedStyle(canvas).backgroundColor;
+      dataCtx.globalCompositeOperation = "destination-in";
+      dataCtx.fillRect(-width, 0, hiddenDataCanvas.width, height);
+      dataCtx.globalCompositeOperation = "source-over";
 
-    storeNewPackets();
+      const trigPacketIndex = triggers[trigIndex];
+      const trigPacket = packets[trigPacketIndex];
+      const trigTime = trigPacket.trigTime;
+      const minTime = trigTime - px_per_ms * width; // Display bounds
+      const maxTime = trigTime + px_per_ms * width;
 
-    /* TODO: inconsistency between full render and new data in terms of
-    whether they associate each packet with the preceding or following trigger*/
+      for (let i = trigPacketIndex-1; i >= 0; i--) { // Draw backwards from trigger point
+        const packet = packets[i];
+        if (packet.start + packet.elapsed < minTime) { break; }
+        renderPacket(packet, trigTime);
+      }
+      for (let i = trigPacketIndex; i < packets.length; i++) { // Forwards from trigger point (including trigger packet itself)
+        const packet = packets[i];
+        if (packet.start > maxTime) { break; }
+        renderPacket(packet, trigTime);
+        lastDrawnPacket = i;
+      }
+      lastDrawnTrigger = trigIndex;
+    }
 
     const pos = Math.round(leftOffset + Number(posSlider.value) * (width - 1));
+    needsReposition = true;
     if (needsReposition) {
       // Clear canvas and redraw underlay
       ctx.clearRect(0, 0, canvas.width, height);
@@ -483,10 +457,11 @@ const updateDisplay = (() => {
       ctx.lineTo(pos + delta, -1);
       ctx.fill();
       needsReposition = false;
+
+      // Finally, in every display update we redraw the data onto the display
+      ctx.drawImage(hiddenDataCanvas, leftOffset + width - pos, 0, width, height, leftOffset, 0, width, height)
+      /* Necessary to respect transparency */
     }
-    // Finally, in every display update we redraw the data onto the display
-    ctx.drawImage(hiddenDataCanvas, width-pos, 0, width, height, leftOffset, 0, width, height)
-    // TODO: CHECK THAT TRANSPARENCY IS RESPECTED.
     // Complete.
     pendingDisplayUpdate = 0;
   }
@@ -541,4 +516,7 @@ const slowSwitch = new LiveSwitch(
 );
 const fastSwitch = new LiveSwitch(
   document.getElementById("fast-lock"), "/enable_fast", "/disable_fast"
+);
+const holdSwitch = new LiveSwitch(
+  document.getElementById("hold"), "/enable_hold", "/disable_hold"
 );
