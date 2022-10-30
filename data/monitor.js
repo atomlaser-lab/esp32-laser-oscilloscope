@@ -16,13 +16,16 @@ const useCookies = document.getElementById("use-cookies");
 
 const resSlider = document.getElementById("sample-resolution");
 const durationSlider = document.getElementById("sample-duration");
+const freqSlider = document.getElementById("freq-offset");
 const resText = document.getElementById("resolution-text");
 const durText = document.getElementById("duration-text");
 const divText = document.getElementById("div-text");
+const freqText = document.getElementById("freq-text");
 
 // Could use wss:// (secure socket).
 const gateway = `ws://${window.location.hostname}/ws`;
 let websocket;
+const freqOffsetBuf = new Uint8ClampedArray(1);
 
 // Data storage
 const maxTriggers = 20; /* Number of triggers' worth of data we remember.*/
@@ -136,16 +139,15 @@ function initWebSocket() {
 // Check the laser's name and state.
 async function updateStatus() {
   fetch("/status")
-    .then((response) => {
+    .then(async (response) => {
       if (response.ok) {
-        const status = response.json();
+        const status = await response.json();
         // Add laser name to page title
         document.title = (status.name) ? "Laser: " + status.name : "Laser";
         document.getElementById("title").innerText = document.title;
         // Update switch states
         slowSwitch.setState(status.slow);
         fastSwitch.setState(status.fast);
-        holdSwitch.setState(status.hold);
       } else {
         console.warn("Status check failed.");
       }
@@ -200,6 +202,14 @@ async function updateSampleSettings(write = false) {
         durationSlider.disabled = false;
       }, 500);
     });
+}
+
+function setFreqOffset(offset) {
+  // Offset should be an integer from 0-255
+  freqOffsetBuf[0] = offset;
+  websocket.send(freqOffsetBuf);
+  freqText.innerText = offset;
+  //freqSlider.value = offset;
 }
 
 /* SETTINGS */
@@ -516,7 +526,4 @@ const slowSwitch = new LiveSwitch(
 );
 const fastSwitch = new LiveSwitch(
   document.getElementById("fast-lock"), "/enable_fast", "/disable_fast"
-);
-const holdSwitch = new LiveSwitch(
-  document.getElementById("hold"), "/enable_hold", "/disable_hold"
 );

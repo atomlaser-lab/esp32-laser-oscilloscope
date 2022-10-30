@@ -23,14 +23,12 @@ const int TRIG_PIN = 32;
 const int SLOW_LOCK_PIN = 33;
 const int FAST_LOCK_PIN = 34;
 const int INPUT_PIN = 35;
-const int HOLD_PIN = 26;
 const int PZT_DAC_PIN = 25;
 
 // Trigger state (Note 'HIGH' and 'LOW' are just aliases for '1' and '0')
 bool trig = LOW;
 bool slow_lock = false;
-bool fast_lock = true;
-bool hold = false;
+bool fast_lock = false;
 
 /* There are two restrictions on the sample resolution and duration:
   1. Calling analogRead too frequently on the ESP8266 interferes with its
@@ -59,10 +57,15 @@ uint64_t trig_time = 0; // Most recent trigger time (microseconds)
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
-/* // Handle a WebSocket message
+// Handle a WebSocket message
 void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
-  return;
-}*/
+  AwsFrameInfo *info = (AwsFrameInfo*)arg;
+  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_BINARY) {
+    /* Received a single binary packet. This is expected to contain a single
+    8-bit integer (we discard anything else)*/
+    dacWrite(PZT_DAC_PIN, data[0]);
+  }
+}
 
 // Handler for WebSocket events
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
@@ -74,7 +77,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
     Serial.printf("WebSocket client #%u disconnected\n", client->id());
     break;
   case WS_EVT_DATA:
-    // handleWebSocketMessage(arg, data, len);
+    handleWebSocketMessage(arg, data, len);
     break;
   case WS_EVT_PONG:
   case WS_EVT_ERROR:
@@ -111,14 +114,13 @@ void setup() {
   pinMode(TRIG_PIN, INPUT);
   pinMode(SLOW_LOCK_PIN, OUTPUT);
   pinMode(FAST_LOCK_PIN, OUTPUT);
-  pinMode(HOLD_PIN, OUTPUT);
   pinMode(INPUT_PIN, INPUT);
   pinMode(PZT_DAC_PIN, OUTPUT);
 
   // Initial pin outputs
   digitalWrite(SLOW_LOCK_PIN, LOW); // Must begin low
   digitalWrite(FAST_LOCK_PIN, LOW);
-  digitalWrite(HOLD_PIN, LOW);
+  dacWrite(PZT_DAC_PIN, 255);
 
   // Indicate that board is running
   digitalWrite(LED_PIN, LOW); // Inverted: LOW is on.
@@ -246,14 +248,14 @@ void setup() {
   // Handle commands (square bracket notation begins an anonymous function)
   server.on("/status", HTTP_GET, [&name](AsyncWebServerRequest *request) {
     StaticJsonDocument<300> statusDoc;
-    statusDoc["name"] = "TestName"; //&name;
+    statusDoc["name"] = name;
     statusDoc["slow"] = slow_lock;
     statusDoc["fast"] = fast_lock;
-    statusDoc["hold"] = hold;
     /* Would be convenient to just read the state of the pins directly,
     but this is unreliable as they are set to OUTPUT mode.*/
     String statusStr = "";
     serializeJson(statusDoc, statusStr);
+    Serial.println(statusStr);
     request->send(200, "text/plain", statusStr);
   });
   server.on("/enable_slow", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -274,16 +276,6 @@ void setup() {
   server.on("/disable_slow", HTTP_POST, [](AsyncWebServerRequest *request) {
     digitalWrite(SLOW_LOCK_PIN, LOW);
     slow_lock = false;
-    request->send(200);
-  });
-  server.on("/enable_hold", HTTP_POST, [](AsyncWebServerRequest *request) {
-    digitalWrite(HOLD_PIN, HIGH);
-    hold = true;
-    request->send(200);
-  });
-  server.on("/disable_hold", HTTP_POST, [](AsyncWebServerRequest *request) {
-    digitalWrite(HOLD_PIN, LOW);
-    hold = false;
     request->send(200);
   });
   server.on("/get_sample_settings", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -359,8 +351,6 @@ void loop() {
     }
   }
   if (elapsed >= time_resolution * N) {
-    // TEMPORARY: write sin signal to PZT shift
-    dacWrite(PZT_DAC_PIN, 128 + (int)(127*sin(micros()/1000000.0)));
     // Record a new measurement
     input_buffer[N++] = (uint8_t)(analogRead(INPUT_PIN) / 16);
     /* Note: ESP32 ADC has 12-bit resolution, while ESP8266 has only 10-bit.
