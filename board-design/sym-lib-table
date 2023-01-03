@@ -1,0 +1,3 @@
+(sym_lib_table
+  (lib (name "moglabs-remote-locking-board-rescue")(type "Legacy")(uri "${KIPRJMOD}/moglabs-remote-locking-board-rescue.lib")(options "")(descr ""))
+)
