@@ -8,3 +8,5 @@
 lib/
 test/
 include/
+
+ignore/

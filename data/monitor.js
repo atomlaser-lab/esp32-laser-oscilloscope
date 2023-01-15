@@ -1,8 +1,4 @@
-/* Script for remote browser oscilloscope / MOGLabs laser control
-
-Ideas:
-- could allow changing the horizontal position by dragging the screen.
-*/
+/* Script for remote browser oscilloscope / MOGLabs laser control */
 
 // DOM
 const canvas = document.getElementById("display");
@@ -121,7 +117,8 @@ window.addEventListener('load', async () => {
   }
 });
 
-// Initialise WebSocket
+// Initialise WebSocket.
+// Useful reading: https://javascript.info/websocket#data-transfer
 function initWebSocket() {
   console.log('Trying to open a WebSocket connection...');
   websocket = new WebSocket(gateway);
@@ -250,6 +247,8 @@ function onMessage(event) { // Handle Websocket message
       if (herald.trigTime !== 0) { //TODO: use NaN or something instead of 0.
         triggers.push(i);
         cullData();
+      } else if (packets.length > 2000) {
+        cullData();
       }
       herald = null; // Ready for next herald
       requestDisplayUpdate();
@@ -260,12 +259,30 @@ function onMessage(event) { // Handle Websocket message
 }
 
 function cullData() { // Remove excess data if required.
-  if (triggers.length > maxTriggers + 10) { //TODO: add data-length condition too
+  let oldestPacketToKeep = 0;
+  let oldestTriggerToKeep = 0;
+  let cull = false; // Whether we need to cull anything.
+  if (triggers.length > maxTriggers + 10) { 
     // Remove any triggers/packets older than maxTriggers
-    const oldestTriggerToKeep = triggers.length - maxTriggers - 1; // Can assume >= 0
-    const oldestPacketToKeep = triggers[oldestTriggerToKeep - 1] + 1; /* We 
-    remove all packets up to the most recent removed trigger packet.
-    */
+    oldestTriggerToKeep = triggers.length - maxTriggers - 1; // Can assume >= 0
+    oldestPacketToKeep = triggers[oldestTriggerToKeep - 1] + 1; 
+    /* We remove all packets up to the most recent removed trigger packet.*/
+    cull = true;
+  } else if (packets.length > 2000) { // Only keep most recent 1000 packets
+    // Get number of excess packets and corresponding triggers
+    oldestPacketToKeep = packets.length - 1000; // oldest kept = number removed
+
+    while (oldestTriggerToKeep < triggers.length) {
+      if (triggers[oldestTriggerToKeep] < oldestPacketToKeep) {
+        oldestTriggerToKeep++;
+      } else {
+        break;
+      }
+    }
+    cull = true;
+  }
+  if (cull) {
+    // Remove excess packets and triggers, and update packet indices of remaining triggers.
     packets = packets.slice(oldestPacketToKeep);
     triggers = triggers.slice(oldestTriggerToKeep).map(i => i - oldestPacketToKeep);
 

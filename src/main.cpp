@@ -1,9 +1,7 @@
 /* ESP32 Remote Laser Oscilloscope and Monitor for
 MOGLabs Diode Laser Controller
 
-Misc notes:
-- What happens if the unsigned long timestamps become too long for
-  JSON/JavaScript on the clientside to handle them with precision?
+(c) Patrick Gleeson 2022
 */
 
 #include <Arduino.h>     // Framework
@@ -14,29 +12,23 @@ Misc notes:
 #include <AsyncJson.h>   // For handling JSON packets
 #include <ESPAsyncWebServer.h>
 
-// ON ESp32 board, pins 16-33 are all good.
+// ON ESP32 board, pins 16-33 are all good.
 
 // Pin mappings
 /* ESP32 has 2 ADC pins. When WiFi is in use, only ADC1 pins (not ADC2 pins) can be used. */
-const int LED_PIN = 2; // For LED only, LOW is on and HIGH is off.
-const int TRIG_PIN = 32;
-const int SLOW_LOCK_PIN = 33;
-const int FAST_LOCK_PIN = 34;
-const int INPUT_PIN = 35;
-const int PZT_DAC_PIN = 25;
+const int LED_PIN = 2; // LED pin is inverted: LOW is on and HIGH is off.
+const int TRIG_PIN = 14;
+const int SLOW_LOCK_PIN = 23;
+const int FAST_LOCK_PIN = 22;
+const int INPUT_PIN = 34;
+const int PZT_DAC_PIN = 26;
 
 // Trigger state (Note 'HIGH' and 'LOW' are just aliases for '1' and '0')
 bool trig = LOW;
 bool slow_lock = false;
 bool fast_lock = false;
 
-/* There are two restrictions on the sample resolution and duration:
-  1. Calling analogRead too frequently on the ESP8266 interferes with its
-  WiFi connection (known bug, see e.g. https://arduino-esp8266.readthedocs.io/en/latest/reference.html#analog-input or
-  https://arduino.stackexchange.com/questions/56399/cant-add-more-code-to-loop-when-use-server-handleclient).
-
-  2. The ESP has limited memory
-
+/*
 Also note that all *external inputs* (config file, client) for resolution and
 duration are in milliseconds, but internally microseconds are used as the
 millis() function only goes to millisecond precision.
@@ -105,17 +97,24 @@ void settingsHandler(AsyncWebServerRequest *request, JsonVariant &json) {
   const JsonObject &jsonObj = json.as<JsonObject>();
   setSampleSettings(jsonObj["resolution"], jsonObj["duration"]);
   request->redirect("/get_sample_settings");
-};
+}
+
+void IRAM_ATTR onTrig() {
+  /* Interrupts need to be in IRAM, for fast access. */
+  trig_time = micros();
+}
 
 // Setup code, run once upon restart.
 void setup() {
   // Pins
   pinMode(LED_PIN, OUTPUT);
-  pinMode(TRIG_PIN, INPUT);
   pinMode(SLOW_LOCK_PIN, OUTPUT);
   pinMode(FAST_LOCK_PIN, OUTPUT);
   pinMode(INPUT_PIN, INPUT);
   pinMode(PZT_DAC_PIN, OUTPUT);
+
+  pinMode(TRIG_PIN, INPUT);
+  attachInterrupt(TRIG_PIN, onTrig, RISING); // Record any triggers
 
   // Initial pin outputs
   digitalWrite(SLOW_LOCK_PIN, LOW); // Must begin low
@@ -138,13 +137,15 @@ void setup() {
   if (!configFile) {
     Serial.println("Unable to access configuration file.");
   }
+
   StaticJsonDocument<512> configDoc;
   DeserializationError error = deserializeJson(configDoc, configFile);
   if (error) {
     Serial.println("Invalid configuration file.");
   }
 
-  const char *name = configDoc["name"]; // Display name for laser. Defaults to NULL
+  static char name[100];
+  strcpy(name, configDoc["name"]); //Laser display name (Defaults to NULL)
 
   // Default sampling settings
   const double configRes = configDoc["default_resolution"];
@@ -167,7 +168,7 @@ void setup() {
   const char *ip_str = configDoc["default_ip"];
   if (ip_str) {
     local_ip.fromString(ip_str);
-    // gateway.fromString(ip_str);
+    gateway.fromString(ip_str);
   }
 
   /* Connect to Wi-Fi. Modes:
@@ -246,16 +247,15 @@ void setup() {
   server.addHandler(&ws);
 
   // Handle commands (square bracket notation begins an anonymous function)
-  server.on("/status", HTTP_GET, [&name](AsyncWebServerRequest *request) {
+  server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
     StaticJsonDocument<300> statusDoc;
-    statusDoc["name"] = name;
+    statusDoc["name"] = name; // name is static, so can be used in lambda func.
     statusDoc["slow"] = slow_lock;
     statusDoc["fast"] = fast_lock;
     /* Would be convenient to just read the state of the pins directly,
     but this is unreliable as they are set to OUTPUT mode.*/
     String statusStr = "";
     serializeJson(statusDoc, statusStr);
-    Serial.println(statusStr);
     request->send(200, "text/plain", statusStr);
   });
   server.on("/enable_slow", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -340,16 +340,7 @@ void loop() {
   }
   // Note micros will eventually roll over.
   elapsed = micros() - packet_start;
-  // Check trigger
-  if (digitalRead(TRIG_PIN) != trig) {
-    trig = !trig;
-    if (trig && N && (trig_time == 0)) {
-      trig_time = packet_start + elapsed;
-      /* Trigger = rising edge (LOW->HIGH) on TRIG_PIN. For now, the trigger
-      is ignored if it occurs between data packets, or has already occurred
-      in the same packet; the client should handle this gracefully.*/
-    }
-  }
+
   if (elapsed >= time_resolution * N) {
     // Record a new measurement
     input_buffer[N++] = (uint8_t)(analogRead(INPUT_PIN) / 16);
@@ -364,7 +355,7 @@ void loop() {
         StaticJsonDocument<200> heraldDoc; // Meta-data to precede measurement packet
         heraldDoc["start"] = (double)(packet_start / 1000.0);
         heraldDoc["elapsed"] = (double)(elapsed / 1000.0);
-        heraldDoc["trigTime"] = trig_time / 1000.0; // 0 if no trigger occurred.
+        heraldDoc["trigTime"] = trig_time / 1000.0; // will be 0 if no trigger occurred.
         String heraldStr;
         serializeJson(heraldDoc, heraldStr);
         ws.textAll(heraldStr);
@@ -379,7 +370,4 @@ void loop() {
       packet_start = micros();
     }
   }
-  /* The ESP8266 runs background processes
-  including WiFi on a separate context, and (unlike the Arduino)
-  we must therefore yield at least occasionally to allow background processes to run. Both delay(0) and yield() do this. For short loops like this one though, it is unnecessary. */
 }
