@@ -1,2 +1,5 @@
 \#*auto_save*
 *backups/
+*.wrl
+*.step
+board-design/shapes3D/

@@ -406,8 +406,8 @@
       "idf": "",
       "netlist": "",
       "specctra_dsn": "",
-      "step": "",
-      "vrml": ""
+      "step": "moglabs-remote-locking-board.step",
+      "vrml": "moglabs-remote-locking-board.wrl"
     },
     "page_layout_descr_file": ""
   },
