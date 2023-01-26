@@ -2,7 +2,7 @@
 <export version="E">
   <design>
     <source>/home/ryan/projects/moglabs-remote-locking-board/board-design/moglabs-remote-locking-board.kicad_sch</source>
-    <date>Wed 25 Jan 2023 11:54:11</date>
+    <date>Thu 26 Jan 2023 14:42:59</date>
     <tool>Eeschema 6.0.10-86aedd382b~118~ubuntu20.04.1</tool>
     <sheet number="1" name="/" tstamps="/">
       <title_block>
@@ -209,13 +209,13 @@
     </comp>
     <comp ref="J2">
       <value>Conn_Coaxial</value>
-      <footprint>Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical</footprint>
+      <footprint>custom-connectors:BNC_Molex_0731000167</footprint>
       <datasheet> ~</datasheet>
       <fields>
-        <field name="Digikey Part Number">2057-PH1-02-UA-ND</field>
+        <field name="Digikey Part Number">WM4089-ND</field>
       </fields>
       <libsource lib="Connector" part="Conn_Coaxial" description="coaxial connector (BNC, SMA, SMB, SMC, Cinch/RCA, LEMO, ...)"/>
-      <property name="Digikey Part Number" value="2057-PH1-02-UA-ND"/>
+      <property name="Digikey Part Number" value="WM4089-ND"/>
       <property name="Sheetname" value=""/>
       <property name="Sheetfile" value="moglabs-remote-locking-board.kicad_sch"/>
       <sheetpath names="/" tstamps="/"/>
@@ -223,13 +223,13 @@
     </comp>
     <comp ref="J3">
       <value>Conn_Coaxial</value>
-      <footprint>Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical</footprint>
+      <footprint>custom-connectors:BNC_Molex_0731000167</footprint>
       <datasheet> ~</datasheet>
       <fields>
-        <field name="Digikey Part Number">2057-PH1-02-UA-ND</field>
+        <field name="Digikey Part Number">WM4089-ND</field>
       </fields>
       <libsource lib="Connector" part="Conn_Coaxial" description="coaxial connector (BNC, SMA, SMB, SMC, Cinch/RCA, LEMO, ...)"/>
-      <property name="Digikey Part Number" value="2057-PH1-02-UA-ND"/>
+      <property name="Digikey Part Number" value="WM4089-ND"/>
       <property name="Sheetname" value=""/>
       <property name="Sheetfile" value="moglabs-remote-locking-board.kicad_sch"/>
       <sheetpath names="/" tstamps="/"/>
@@ -237,13 +237,13 @@
     </comp>
     <comp ref="J4">
       <value>Conn_Coaxial</value>
-      <footprint>Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical</footprint>
+      <footprint>custom-connectors:BNC_Molex_0731000167</footprint>
       <datasheet> ~</datasheet>
       <fields>
-        <field name="Digikey Part Number">2057-PH1-02-UA-ND</field>
+        <field name="Digikey Part Number">WM4089-ND</field>
       </fields>
       <libsource lib="Connector" part="Conn_Coaxial" description="coaxial connector (BNC, SMA, SMB, SMC, Cinch/RCA, LEMO, ...)"/>
-      <property name="Digikey Part Number" value="2057-PH1-02-UA-ND"/>
+      <property name="Digikey Part Number" value="WM4089-ND"/>
       <property name="Sheetname" value=""/>
       <property name="Sheetfile" value="moglabs-remote-locking-board.kicad_sch"/>
       <sheetpath names="/" tstamps="/"/>
@@ -264,13 +264,13 @@
     </comp>
     <comp ref="J6">
       <value>Conn_Coaxial</value>
-      <footprint>Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical</footprint>
+      <footprint>custom-connectors:BNC_Molex_0731000167</footprint>
       <datasheet> ~</datasheet>
       <fields>
-        <field name="Digikey Part Number">2057-PH1-02-UA-ND</field>
+        <field name="Digikey Part Number">WM4089-ND</field>
       </fields>
       <libsource lib="Connector" part="Conn_Coaxial" description="coaxial connector (BNC, SMA, SMB, SMC, Cinch/RCA, LEMO, ...)"/>
-      <property name="Digikey Part Number" value="2057-PH1-02-UA-ND"/>
+      <property name="Digikey Part Number" value="WM4089-ND"/>
       <property name="Sheetname" value=""/>
       <property name="Sheetfile" value="moglabs-remote-locking-board.kicad_sch"/>
       <sheetpath names="/" tstamps="/"/>
@@ -278,13 +278,13 @@
     </comp>
     <comp ref="J7">
       <value>Conn_Coaxial</value>
-      <footprint>Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical</footprint>
+      <footprint>custom-connectors:BNC_Molex_0731000167</footprint>
       <datasheet> ~</datasheet>
       <fields>
-        <field name="Digikey Part Number">2057-PH1-02-UA-ND</field>
+        <field name="Digikey Part Number">WM4089-ND</field>
       </fields>
       <libsource lib="Connector" part="Conn_Coaxial" description="coaxial connector (BNC, SMA, SMB, SMC, Cinch/RCA, LEMO, ...)"/>
-      <property name="Digikey Part Number" value="2057-PH1-02-UA-ND"/>
+      <property name="Digikey Part Number" value="WM4089-ND"/>
       <property name="Sheetname" value=""/>
       <property name="Sheetfile" value="moglabs-remote-locking-board.kicad_sch"/>
       <sheetpath names="/" tstamps="/"/>
