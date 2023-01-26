@@ -1,0 +1,6 @@
+"Digikey Part Number","Quantity","Description"
+"S7017-ND","10","Female header for the ESP development board"
+"2057-PH1-19-UA-ND","10","Male header for ESP development board"
+"2057-RF1-106-D-00-50-HDW-ND","25","BNC bulkhead connector"
+"S7000-ND","25","Female header connectors for connecting BNCs to PCB"
+
