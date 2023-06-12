@@ -30,11 +30,25 @@
       </button>
     </label>
 
+    <label class="live-switch">
+      <span>LASER ON</span>
+      <button id="laser-on">
+        <div class="thumb"></div>
+      </button>
+    </label>
+
+    <label class="live-switch">
+      <span>HOLD</span>
+      <button id="hold">
+        <div class="thumb"></div>
+      </button>
+    </label>
+
     <label class="slider-setting">
       <span>FREQUENCY OFFSET:&nbsp</span>
-      <span id="freq-text">127</span><br />
-      <input type="range" id="freq-offset" min="0" max="255" step="1"
-        value="127" oninput="setFreqOffset(this.value)">
+      <span id="freq-text">2047</span><br />
+      <input type="range" id="freq-offset" min="0" max="4095" step="1"
+        value="2047" oninput="setFreqOffset(this.value)">
     </label>
   </div>
 

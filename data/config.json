@@ -1,11 +1,11 @@
 {
   "name": "OpticalClock",
-  "host": true,
+  "host": false,
   "host_ssid": "ESP32_Laser_Lock",
   "host_password": "laserlock",
   "host_channel": 3,
-  "ssid": "ExampleNetwork",
-  "password": "ExamplePassword",
+  "ssid": "MyNetworkName",
+  "password": "mynetworkpassword",
   "default_duration": 80,
   "default_resolution": 1,
   "default_ip": "192.168.1.184"

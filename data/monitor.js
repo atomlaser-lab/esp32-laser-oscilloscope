@@ -21,7 +21,7 @@ const freqText = document.getElementById("freq-text");
 // Could use wss:// (secure socket).
 const gateway = `ws://${window.location.hostname}/ws`;
 let websocket;
-const freqOffsetBuf = new Uint8ClampedArray(1);
+const freqOffsetView = new DataView(new ArrayBuffer(2)); //2 bytes to store DAC.
 
 // Data storage
 const maxTriggers = 20; /* Number of triggers' worth of data we remember.*/
@@ -86,7 +86,7 @@ Each requestAnimationFrame call *adds* a callback to the next frame. We want
 at most one display callback, so we check to see if one was already requested.
 
 If the tab is not visible, most browsers will not run requestAnimationFrame callbacks. Our redraw flags will remain until the next successful
-callback, and we request a full re-render when visibility is returned.
+callback, and anyway we request a full re-render when visibility is returned.
 */
 
 /* INITIALISATION AND STATUS CHECKS */
@@ -202,10 +202,11 @@ async function updateSampleSettings(write = false) {
 }
 
 function setFreqOffset(offset) {
-  // Offset should be an integer from 0-255
-  freqOffsetBuf[0] = offset;
-  websocket.send(freqOffsetBuf);
-  freqText.innerText = offset;
+  // Offset should be an integer from 0-4095
+  freqOffsetView.setUint16(0, offset, false);
+  //false => big-endian, which is how we interpret it at the other end.
+  websocket.send(freqOffsetView);
+  freqText.innerText = `${offset}/4095`;
   //freqSlider.value = offset;
 }
 
@@ -242,7 +243,18 @@ function updateDisplaySettings(...settingNames) {
 function onMessage(event) { // Handle Websocket message
   if (event.data instanceof ArrayBuffer) { // Measurement packet (binary)
     if (herald) { // Make sure a herald came first. Otherwise ignore.
-      herald.measurements = new Uint8Array(event.data);
+      /* Expect array of even length, containing samples from both
+      photodiode and error channels, interspersed (this is fastest and most
+      convenient for collection and websocket transfer) */
+      interleaved_data = new Uint8Array(event.data); // Channels alternate
+      const N = interleaved_data.length/2; // Number of samples
+      herald.pd_measurements = new Uint8Array(N);
+      herald.error_measurements = new Uint8Array(N);
+      for (let n = 0; n < N; n ++) { // Un-entwine separate channels
+        herald.pd_measurements[n] = interleaved_data[2*n];
+        herald.error_measurements[n] = interleaved_data[2 * n + 1];
+      }
+      
       const i = packets.push(herald) - 1; //Record packet and get index
       if (herald.trigTime !== 0) { //TODO: use NaN or something instead of 0.
         triggers.push(i);
@@ -253,7 +265,7 @@ function onMessage(event) { // Handle Websocket message
       herald = null; // Ready for next herald
       requestDisplayUpdate();
     }
-  } else { // Herald packet (text)
+  } else { // Herald packet (text) containing metadata.
     herald = JSON.parse(event.data);
   }
 }
@@ -309,15 +321,25 @@ const updateDisplay = (() => {
   // Private helper function for drawing a packet
   function renderPacket(packet, trigtime) {
     // TODO: highlight clipped signals in red.
-    dataCtx.strokeStyle = "#ffff00"; // Colour for data
-    const meas = packet.measurements;
-    const px_per_datapoint = px_per_ms * packet.elapsed / meas.length;
+    const pd_meas = packet.pd_measurements;
+    const error_meas = packet.error_measurements;
+    const px_per_datapoint = px_per_ms * packet.elapsed / pd_meas.length;
     const offset = px_per_ms * (packet.start - trigtime);
     const px_per_voltbit = 0.75 * height / 255;
+    // Photodiode
+    dataCtx.strokeStyle = "#ffff00"; // Colour for PD signal
     dataCtx.beginPath();
-    dataCtx.moveTo(offset, meas[0] * px_per_voltbit);
-    for (let i = 1; i < meas.length; i++) {
-      dataCtx.lineTo(offset + i * px_per_datapoint, meas[i] * px_per_voltbit);
+    dataCtx.moveTo(offset, pd_meas[0] * px_per_voltbit);
+    for (let i = 1; i < pd_meas.length; i++) {
+      dataCtx.lineTo(offset + i * px_per_datapoint, pd_meas[i] * px_per_voltbit);
+    }
+    dataCtx.stroke();
+    // Error signal
+    dataCtx.strokeStyle = "#D62839"; // Colour for Error signal
+    dataCtx.beginPath();
+    dataCtx.moveTo(offset, error_meas[0] * px_per_voltbit);
+    for (let i = 1; i < error_meas.length; i++) {
+      dataCtx.lineTo(offset + i * px_per_datapoint, error_meas[i] * px_per_voltbit);
     }
     dataCtx.stroke();
   }

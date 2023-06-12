@@ -1,61 +1,122 @@
-/* ESP32 Remote Laser Oscilloscope and Monitor for
-MOGLabs Diode Laser Controller
+/* ESP32 Remote Monitor and locking control for MOGLabs Diode Laser Controller
 
 (c) Patrick Gleeson 2022
+
+General notes:
+- See TODO comments scattered throughout.
+- HIGH and LOW are aliases for 1 and 0, respectively.
+- TODO: track, report and client-command of LASER_ON and HOLD status.
 */
 
-#include <Arduino.h>     // Framework
+#include <Arduino.h>           // Framework
+#include <ArduinoJSON.h>       // https://arduinojson.org/
+#include <AsyncJson.h>         // For handling JSON packets
+#include <ESPAsyncWebServer.h> // https://github.com/me-no-dev/ESPAsyncWebServer
+#include <LittleFS.h>          // File-system
+#include <SPI.h>
 #include <WiFi.h>
-#include <LittleFS.h>    // File-system
-// https://github.com/me-no-dev/ESPAsyncWebServer
-#include <ArduinoJSON.h> // https://arduinojson.org/
-#include <AsyncJson.h>   // For handling JSON packets
-#include <ESPAsyncWebServer.h>
+// #include <MCP_DAC.h>
 
-// ON ESP32 board, pins 16-33 are all good.
+/* Pin mappings. With the Arduino framework, the pin number is the
+ESP32 GPIO number (at least by default in PlatformIO)*/
+#define PD_INPUT_PIN 39
+#define LOCK_INPUT_PIN 36
+#define TRIG_PIN 34
 
-// Pin mappings
-/* ESP32 has 2 ADC pins. When WiFi is in use, only ADC1 pins (not ADC2 pins) can be used. */
-const int LED_PIN = 2; // LED pin is inverted: LOW is on and HIGH is off.
-const int TRIG_PIN = 14;
-const int SLOW_LOCK_PIN = 23;
-const int FAST_LOCK_PIN = 22;
-const int INPUT_PIN = 34;
-const int PZT_DAC_PIN = 26;
+#define LED_PIN 2
 
-// Trigger state (Note 'HIGH' and 'LOW' are just aliases for '1' and '0')
-bool trig = LOW;
+#define SLOW_LOCK_PIN 14
+#define FAST_LOCK_PIN 4
+#define LASER_ON_PIN 21
+#define HOLD_PIN 27
+
+#define LDACN_PIN 22
+#define VSPI_MOSI 23
+#define VSPI_SCK 18
+#define VSPI_CS 5
+#define VSPI_MISO 19 // Not used
+SPIClass *vspi = NULL; // Initialised in setup(). For DAC control.
+
+// https://cyberblogspot.com/how-to-use-mcp4921-dac-with-arduino/
+//  INCLUDES HOW-TO WITHOUT MCP Library.
+// MCP4821 dac(VSPI_MOSI, VSPI_SCK);
+
+/* Tracking the output state by reading the appropriate output pin
+values is unreliable, so record it explicitly: */
 bool slow_lock = false;
 bool fast_lock = false;
+bool hold = false;
+bool laser_on = false;
 
-/*
-Also note that all *external inputs* (config file, client) for resolution and
-duration are in milliseconds, but internally microseconds are used as the
-millis() function only goes to millisecond precision.
-*/
-const int buffer_size = 4096; // TODO: choose buffer size.
-uint8_t input_buffer[buffer_size];
+/* Settings and storage for data sampling. Resolution and duration are specified externally (client, config file) in milliseconds, but are handled
+internally in microseconds.*/
+#define MIN_RES 100               // microseconds. int.
+#define MIN_DURATION 30000.0      // Else ESP32 can become unresponsive. Float.
+#define MAX_DURATION 20000000.0   // 20 sec. (float)
+#define CHANNEL_BUFFER_SIZE 16384 // 16KB per channel, enough for 10s data at 1ms resolution.
+/* A new packet will be started if the buffer gets full, regardless of sampling
+settings*/
+uint8_t input_buffer[2 * CHANNEL_BUFFER_SIZE]; // Alternating PD & error samples.
 
 unsigned int time_resolution = 2000;  // Microseconds
-unsigned int next_resolution = 2000;  // Pending resolution.
+unsigned int next_resolution = 2000;  // For next packet.
 unsigned int sample_duration = 40000; // Microseconds
 
 uint64_t packet_start;  // Packet start time (microseconds);
 uint64_t elapsed = 0;   // Since start of packet (microseconds)
-unsigned int N = 0;     // Datapoint in current packet
+unsigned int N = 0;     // Datapoint index in current packet
 uint64_t trig_time = 0; // Most recent trigger time (microseconds)
 
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
-// Handle a WebSocket message
+// Send value to external MCP4821 DAC.
+
+// void set12BitDAC(unsigned int dac_value) {
+//   /* Use SPI clock rate 10MHz (MCP4821 supports up to 20MHz). The MCP4821
+//   is compatible with SPI_MODE0, where the clock is LOW when idle and data
+//   is transferred on the rising edge.*/
+//   vspi->beginTransaction(SPISettings(10000000, MSBFIRST, SPI_MODE0));
+//   digitalWrite(vspi->pinSS(), LOW);           // pull SS slow to prep other end for transfer
+
+//   vspi->transfer((uint8_t) dac_value>>8); // PROBABLY WRONG.
+//   vspi->transfer((uint8_t) dac_value & 0xff);
+
+//   /*
+//   // 4 config bits (see README) + first four value bits
+//   vspi->transfer((0b0001 << 4) | (dac_value & 0b111100000000) );
+//   vspi->transfer(dac_value & 0b11111111); // Last 8 value bits
+//   */
+//   digitalWrite(vspi->pinSS(), HIGH);          // pull ss high to signify end of data transfer
+//   vspi->endTransaction();
+//   /* Data value will be immediately translated to VOUT, as LDACn is set
+//   permanently HIGH in setup().*/
+// }
+
+void setVoltage(uint16_t value) {
+  Serial.println(value);
+  uint16_t data = 0x3000 | value;
+  Serial.println(data, BIN);
+  digitalWrite(vspi->pinSS(), LOW); //VSPI_CS
+  vspi->beginTransaction(SPISettings(16000000, MSBFIRST, SPI_MODE0));
+  vspi->transfer((uint8_t)(data >> 8));
+  vspi->transfer((uint8_t)(data & 0xFF));
+  vspi->endTransaction();
+  digitalWrite(vspi->pinSS(), HIGH);
+}
+
+/* Handle an incoming WebSocket message. These are expected to be 12-bit
+level values for the external MCP4821 DAC. */
 void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
-  AwsFrameInfo *info = (AwsFrameInfo*)arg;
+  AwsFrameInfo *info = (AwsFrameInfo *)arg;
   if (info->final && info->index == 0 && info->len == len && info->opcode == WS_BINARY) {
-    /* Received a single binary packet. This is expected to contain a single
-    8-bit integer (we discard anything else)*/
-    dacWrite(PZT_DAC_PIN, data[0]);
+    /* Received a single binary packet. This is expected to contain two bytes,
+    forming a 16 bit integer (most-significant byte first). The 12
+    least-significant bits are our DAC value. */
+    // set12BitDAC((data[0] << 8) | data[1]);
+    setVoltage((((uint16_t)data[0]) << 8) | ((uint16_t)data[1]));
+    // Obsolete: dacWrite(pin, 8-bit value) for ESP32's inbuilt 8-bit DAC.
   }
 }
 
@@ -66,6 +127,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
     Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
     break;
   case WS_EVT_DISCONNECT:
+    // Could initiate sleep here.
     Serial.printf("WebSocket client #%u disconnected\n", client->id());
     break;
   case WS_EVT_DATA:
@@ -78,54 +140,72 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
   }
 }
 
+// Update
 void setSampleSettings(double resolution, double duration) {
-  /* Duration takes effect immediately but resolution waits until a
-  new packet. Note arguments are in milliseconds but next_resolution
-  and sample_duration are in microseconds.*/
-  next_resolution = max((int)(resolution * 1000), 100); //Hard limit 0.1ms res
-  sample_duration = (int) min(max(
-    max(duration * 1000, 2.0 * next_resolution), 30000.0),
-    20000000.0); // Hard min 30ms and max 20sec, else ESP can become unresponsive
-  /*Also enforce duration > 2*resolution (to ensure >1 sample)*/
+  /* Arguments are in milliseconds and converted to microseconds for
+  next_resolution and sample_duration. Duration takes effect immediately but
+  resolution waits until a new packet, so that samples remain evenly spaced. */
+  next_resolution = max((int)(resolution * 1000), MIN_RES); // Hard limit 0.1ms res
+  sample_duration = (int)min(max(
+                                 max(duration * 1000, 2.0 * next_resolution), MIN_DURATION),
+                             MAX_DURATION);
+  /* Hard duration min 30ms and max 20sec, else ESP can become unresponsive.
+  Also enforce duration > 2*resolution, to ensure >1 samples. */
   Serial.println(" Sampling settings set to:");
   Serial.printf("  Resolution: %.1f ms\n", next_resolution / 1000.0);
   Serial.printf("  Duration: %.1f ms\n", sample_duration / 1000.0);
   Serial.println();
 }
 
+// Handle a HTTP request to update sampling settings
 void settingsHandler(AsyncWebServerRequest *request, JsonVariant &json) {
   const JsonObject &jsonObj = json.as<JsonObject>();
   setSampleSettings(jsonObj["resolution"], jsonObj["duration"]);
   request->redirect("/get_sample_settings");
 }
 
+/* Record the time of a trigger interrupt. Interrupts need to be in IRAM for
+fast access (hence IRAM_ATTR). */
 void IRAM_ATTR onTrig() {
-  /* Interrupts need to be in IRAM, for fast access. */
   trig_time = micros();
 }
 
-// Setup code, run once upon restart.
+// Setup code, is run once upon restart.
 void setup() {
-  // Pins
-  pinMode(LED_PIN, OUTPUT);
+  // dac.begin(VSPI_CS);
+  //  Serial port for debugging purposes
+  Serial.begin(115200); // 115200 is baud rate (symbol communication rate)
+
+  // Output pins
+  pinMode(LED_PIN, OUTPUT); // ESP32 devkit onboard LED
   pinMode(SLOW_LOCK_PIN, OUTPUT);
   pinMode(FAST_LOCK_PIN, OUTPUT);
-  pinMode(INPUT_PIN, INPUT);
-  pinMode(PZT_DAC_PIN, OUTPUT);
+  pinMode(LASER_ON_PIN, OUTPUT);
+  pinMode(HOLD_PIN, OUTPUT);
+  pinMode(LDACN_PIN, OUTPUT);
 
+  vspi = new SPIClass(VSPI);
+  vspi->begin(VSPI_SCK, VSPI_MISO, VSPI_MOSI, VSPI_CS); // SCK, MISO, MOSI, SS
+  pinMode(vspi->pinSS(), OUTPUT);
+
+  /* SPI API info: https://docs.espressif.com/projects/arduino-esp32/en/latest/api/spi.html and links therein */
+
+  // Initial output values
+  digitalWrite(SLOW_LOCK_PIN, LOW);
+  digitalWrite(FAST_LOCK_PIN, LOW);
+  digitalWrite(LASER_ON_PIN, LOW);
+  digitalWrite(HOLD_PIN, LOW);
+  digitalWrite(LDACN_PIN, HIGH); // So DAC input is automatically applied
+  // Laser will not turn on if SLOW is HIGH.
+
+  digitalWrite(LED_PIN, LOW); // Indicate that board is running.
+  // LED pin is inverted: LOW is on.
+
+  // Input pins
+  pinMode(PD_INPUT_PIN, INPUT);   // Photodiode channel.
+  pinMode(LOCK_INPUT_PIN, INPUT); // Error signal.
   pinMode(TRIG_PIN, INPUT);
   attachInterrupt(TRIG_PIN, onTrig, RISING); // Record any triggers
-
-  // Initial pin outputs
-  digitalWrite(SLOW_LOCK_PIN, LOW); // Must begin low
-  digitalWrite(FAST_LOCK_PIN, LOW);
-  dacWrite(PZT_DAC_PIN, 255);
-
-  // Indicate that board is running
-  digitalWrite(LED_PIN, LOW); // Inverted: LOW is on.
-
-  // Serial port for debugging purposes
-  Serial.begin(115200); // 115200 is baud rate (i.e. Serial communication rate)
 
   // Begin filesystem
   if (!LittleFS.begin()) {
@@ -145,7 +225,7 @@ void setup() {
   }
 
   static char name[100];
-  strcpy(name, configDoc["name"]); //Laser display name (Defaults to NULL)
+  strcpy(name, configDoc["name"]); // Laser display name (Defaults to NULL)
 
   // Default sampling settings
   const double configRes = configDoc["default_resolution"];
@@ -155,7 +235,9 @@ void setup() {
       configDur ? configDur : 60.0);
 
   // WiFi details
-  const bool host = configDoc["host"]; // Whether to host own network (mainly for testing). If not found in the config file, this value will default to zero, i.e. false.
+  const bool host = configDoc["host"]; /* Whether to host own network (mainly
+  for testing). If not found in the config file, this value will default to
+  false (zero). */
 
   // Network defaults
   IPAddress local_ip(192, 168, 1, 1); // How we appear to other devices on the network
@@ -174,7 +256,7 @@ void setup() {
   /* Connect to Wi-Fi. Modes:
   - Station (STA): connects to existing WiFi.
   - Access Point (AP): hosts its own network. By default limited to 4
-    connected devices; this can be increased up to 8.
+    connected devices; this can be increased up to 8. Below, we limit it to 1.
   */
 
   WiFi.disconnect();
@@ -210,7 +292,7 @@ void setup() {
   } else { // Connect to existing network
     const char *ssid = configDoc["ssid"];
     const char *password = configDoc["password"]; // NULL if missing
-    if (!ssid) { // If password missing, will be assumed no password.
+    if (!ssid) {                                  // If password missing, will be assumed no password.
       Serial.println("Missing WiFi ssid.");
     }
     WiFi.mode(WIFI_STA);
@@ -236,7 +318,7 @@ void setup() {
 
   // Serve webpage and handle Websocket events
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
-  /*
+  /* Alternative method:
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(LittleFS, "/index.html", "text/html", false);
     // Or: request->redirect("/index.html"); });
@@ -287,13 +369,14 @@ void setup() {
     serializeJson(settingsDoc, settingsStr);
     request->send(200, "text/plain", settingsStr);
   });
-  // Handler for receiving sampling settings as JSON.
-  /* There are two possible methods for this. See https://github.com/me-no-dev/ESPAsyncWebServer/issues/195 */
 
+  /* Handler for receiving sampling settings as JSON. Two possible methods
+   for this (see https://github.com/me-no-dev/ESPAsyncWebServer/issues/195) */
   server.addHandler(new AsyncCallbackJsonWebHandler(
       "/set_sample_settings",
       settingsHandler, 1024)); // Last argument is max JSON bytesize
-  /* Alternative pattern: handle chunked reception of body manually
+
+  /* Alternative pattern: handle chunked reception of body manually.
   server.on("/set_sample_settings", HTTP_POST,
     [](AsyncWebServerRequest *request) {
       // Request handler code here. This will be run AFTER all body chunks have been received. The bodyHandler below collects the entire body into request->_tempObject, which you can use here to access the body.
@@ -319,7 +402,7 @@ void setup() {
   });
   */
 
-  // Other pages fail.
+  // All other requests should fail.
   server.onNotFound([](AsyncWebServerRequest *request) {
     Serial.println("Requested page not found.");
     request->send(404);
@@ -327,29 +410,34 @@ void setup() {
 
   // Start server
   server.begin();
-  packet_start = micros(); // Will be a slight delay for the first packet.
+  packet_start = micros(); // Will be a slight delay before the first packet.
 }
 
-// Run repeatedly after setup()
+// Is run repeatedly after setup()
 void loop() {
-  if (ws.count() == 0) { //Nobody's listening, wait.
-    // Otherwise will not allow the page to load.
+  if (ws.count() == 0) { // ws.count() is number of connected websocket clients
+    // Nobody's listening, wait. Otherwise will not allow the page to load.
+    delay(10);
     packet_start = micros();
-    N=0;
+    N = 0;
     return;
   }
-  // Note micros will eventually roll over.
+
   elapsed = micros() - packet_start;
+  if (elapsed < 0) {
+    // TODO: handle micros() rollover here.
+  }
 
   if (elapsed >= time_resolution * N) {
-    // Record a new measurement
-    input_buffer[N++] = (uint8_t)(analogRead(INPUT_PIN) / 16);
-    /* Note: ESP32 ADC has 12-bit resolution, while ESP8266 has only 10-bit.
-    To reduce to 1 byte, we need to divide by 4 on ESP8266 but 16 on ESP32. */
+    // dac.analogWrite(sin(millis()/1000) * 1000);
+    setVoltage((uint16_t)((sin(millis() / 1000)+1.1) * 1000));
+    // Record a new measurement (reducing 12-bit ESP32 ADC resolution to 1 byte)
+    input_buffer[2 * N] = (uint8_t)(analogRead(PD_INPUT_PIN) >> 4);           // Photodiode
+    input_buffer[2 * (N++) + 1] = (uint8_t)(analogRead(LOCK_INPUT_PIN) >> 4); // Error signal
     // Check if finished packet
-    if ((elapsed >= sample_duration) || N >= buffer_size) {
+    if ((elapsed >= sample_duration) || N >= CHANNEL_BUFFER_SIZE) {
       // Send data
-      ws.cleanupClients();  // Release improperly-closed connections
+      ws.cleanupClients(); // Release improperly-closed connections
       if (ws.availableForWriteAll()) {
         // Send metadata
         StaticJsonDocument<200> heraldDoc; // Meta-data to precede measurement packet
@@ -360,8 +448,8 @@ void loop() {
         serializeJson(heraldDoc, heraldStr);
         ws.textAll(heraldStr);
         // Send measurement packet
-        ws.binaryAll(input_buffer, N); /* Final argument is number of
-          BYTES to send. Note  */
+        ws.binaryAll(input_buffer, 2 * N);
+        /* Final argument is number of BYTES to send.*/
       }
       // Start new packet
       N = 0;
