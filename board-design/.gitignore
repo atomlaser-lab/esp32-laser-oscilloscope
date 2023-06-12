@@ -1,0 +1,6 @@
+\#*auto_save*
+*backups/
+*.wrl
+*.step
+shapes3D/
+generated/
