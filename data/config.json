@@ -1,6 +1,6 @@
 {
   "name": "OpticalClock",
-  "host": false,
+  "host": true,
   "host_ssid": "ESP32_Laser_Lock",
   "host_password": "laserlock",
   "host_channel": 3,

@@ -15,7 +15,6 @@ General notes:
 #include <LittleFS.h>          // File-system
 #include <SPI.h>
 #include <WiFi.h>
-// #include <MCP_DAC.h>
 
 /* Pin mappings. With the Arduino framework, the pin number is the
 ESP32 GPIO number (at least by default in PlatformIO)*/
@@ -36,10 +35,6 @@ ESP32 GPIO number (at least by default in PlatformIO)*/
 #define VSPI_CS 5
 #define VSPI_MISO 19 // Not used
 SPIClass *vspi = NULL; // Initialised in setup(). For DAC control.
-
-// https://cyberblogspot.com/how-to-use-mcp4921-dac-with-arduino/
-//  INCLUDES HOW-TO WITHOUT MCP Library.
-// MCP4821 dac(VSPI_MOSI, VSPI_SCK);
 
 /* Tracking the output state by reading the appropriate output pin
 values is unreliable, so record it explicitly: */
@@ -72,38 +67,28 @@ AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
 // Send value to external MCP4821 DAC.
-
-// void set12BitDAC(unsigned int dac_value) {
-//   /* Use SPI clock rate 10MHz (MCP4821 supports up to 20MHz). The MCP4821
-//   is compatible with SPI_MODE0, where the clock is LOW when idle and data
-//   is transferred on the rising edge.*/
-//   vspi->beginTransaction(SPISettings(10000000, MSBFIRST, SPI_MODE0));
-//   digitalWrite(vspi->pinSS(), LOW);           // pull SS slow to prep other end for transfer
-
-//   vspi->transfer((uint8_t) dac_value>>8); // PROBABLY WRONG.
-//   vspi->transfer((uint8_t) dac_value & 0xff);
-
-//   /*
-//   // 4 config bits (see README) + first four value bits
-//   vspi->transfer((0b0001 << 4) | (dac_value & 0b111100000000) );
-//   vspi->transfer(dac_value & 0b11111111); // Last 8 value bits
-//   */
-//   digitalWrite(vspi->pinSS(), HIGH);          // pull ss high to signify end of data transfer
-//   vspi->endTransaction();
-//   /* Data value will be immediately translated to VOUT, as LDACn is set
-//   permanently HIGH in setup().*/
-// }
-
-void setVoltage(uint16_t value) {
+// Similar to https://cyberblogspot.com/how-to-use-mcp4921-dac-with-arduino/
+// but the bytes sent have been adjusted so it works.
+void set12BitDAC(uint16_t value) {
   Serial.println(value);
-  uint16_t data = 0x3000 | value;
-  Serial.println(data, BIN);
-  digitalWrite(vspi->pinSS(), LOW); //VSPI_CS
+  uint16_t data = 0b0001000000000000 | value; // could go directly to secondByte
+  // 4 config bits + most significant 4 value bits
+  uint8_t firstByte = 0b00010000 | ((uint8_t)((value & 0xFFF) >> 8));
+  // remaining 8 value bits
+  uint8_t secondByte = (uint8_t) data;
+  //Serial.println(firstByte, BIN);
+  //Serial.println(secondByte, BIN);
+  digitalWrite(vspi->pinSS(), LOW); // VSPI_CS; pull low to prep other end for transfer
+  /* Use SPI clock rate 16MHz (MCP4821 supports up to 20MHz). We use SPI_MODE0,
+  where the clock is LOW when idle and data is transferred on the rising edge.*/
   vspi->beginTransaction(SPISettings(16000000, MSBFIRST, SPI_MODE0));
-  vspi->transfer((uint8_t)(data >> 8));
-  vspi->transfer((uint8_t)(data & 0xFF));
+  vspi->transfer(firstByte);
+  vspi->transfer(secondByte);
   vspi->endTransaction();
-  digitalWrite(vspi->pinSS(), HIGH);
+  // pull ss (CS) high to signify end of data transfer
+  digitalWrite(vspi->pinSS(), HIGH); 
+  /* Data value will be immediately translated to VOUT, as LDACn is set
+   permanently LOW in setup().*/
 }
 
 /* Handle an incoming WebSocket message. These are expected to be 12-bit
@@ -114,8 +99,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     /* Received a single binary packet. This is expected to contain two bytes,
     forming a 16 bit integer (most-significant byte first). The 12
     least-significant bits are our DAC value. */
-    // set12BitDAC((data[0] << 8) | data[1]);
-    setVoltage((((uint16_t)data[0]) << 8) | ((uint16_t)data[1]));
+    set12BitDAC((((uint16_t)data[0]) << 8) | ((uint16_t)data[1]));
     // Obsolete: dacWrite(pin, 8-bit value) for ESP32's inbuilt 8-bit DAC.
   }
 }
@@ -195,7 +179,8 @@ void setup() {
   digitalWrite(FAST_LOCK_PIN, LOW);
   digitalWrite(LASER_ON_PIN, LOW);
   digitalWrite(HOLD_PIN, LOW);
-  digitalWrite(LDACN_PIN, HIGH); // So DAC input is automatically applied
+  digitalWrite(LDACN_PIN, LOW); // So DAC input is automatically applied.
+  // LDACN control is a likely 
   // Laser will not turn on if SLOW is HIGH.
 
   digitalWrite(LED_PIN, LOW); // Indicate that board is running.
@@ -429,8 +414,6 @@ void loop() {
   }
 
   if (elapsed >= time_resolution * N) {
-    // dac.analogWrite(sin(millis()/1000) * 1000);
-    setVoltage((uint16_t)((sin(millis() / 1000)+1.1) * 1000));
     // Record a new measurement (reducing 12-bit ESP32 ADC resolution to 1 byte)
     input_buffer[2 * N] = (uint8_t)(analogRead(PD_INPUT_PIN) >> 4);           // Photodiode
     input_buffer[2 * (N++) + 1] = (uint8_t)(analogRead(LOCK_INPUT_PIN) >> 4); // Error signal

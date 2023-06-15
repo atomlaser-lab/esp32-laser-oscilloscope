@@ -184,7 +184,7 @@ The photodiode input offset and error signal offset can be adjusted respectively
 Test the frequency control output (J6) before connecting, to ensure it is within the range +/- 0.2V. Before connecting, a 5kΩ resistor must be added at location R113 on the DLC's circuit board to allow adding an external frequency voltage offset.
 
 | Description | Example part | **DLC** location | Total Qty |
-| --- | --- | --- | --- | --- |
+| --- | --- | --- | --- |
 | 5kΩ size 0603 SMD resistor | RMCF0603JT5K10 | R113 | 1 |
 
 Once this is added, connect J6 via BNC to the DLC's SWEEP/PZT MOD input.
