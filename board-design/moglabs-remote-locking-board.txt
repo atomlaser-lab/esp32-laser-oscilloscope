@@ -8,7 +8,7 @@
 "PS1","2","IA0505S","IA0505S","1470-IAB0105D05-ND"
 "J1","2","Conn_01x02_Male","Conn_01x02_Male","2057-PH1-02-UA-ND"
 "U2","2","ESP32-DevKitC","ESP32-DevKitC","1965-ESP32-DEVKITC-VE-ND"
-"C3, C4, C5, C9","8","100n","C_Small","399-C1206C104K5RAC7210CT-ND"
+"C3, C4, C5, C9, C10","10","100n","C_Small","399-C1206C104K5RAC7210CT-ND"
 "J5, J9","4","Conn_01x16_Female","Conn_01x16_Female","61301611821-ND"
 "D1, D2, D3, D4, D5","10","D_Schottky","D_Schottky","478-7809-1-ND"
 "RV1","2","R_Potentiometer","R_Potentiometer","987-1508-ND"

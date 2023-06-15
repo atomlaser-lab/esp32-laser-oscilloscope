@@ -92,7 +92,7 @@ The project currently has three inputs and three outputs. The photodiode , error
 
 The next section contains some guidance for putting together the PCB. The ESP32 board can be soldered to the PCB directly for the smallest possible footprint, but it is much more flexible to attach it via additional male and female headers. The external frequency offset voltages used in this project also require soldering an additional resistor into the DLC (see [Connecting to the Diode Laser Controller](#connecting-to-the-diode-laser-controller)). 
 
-Part numbers and quantities for two PCBs are specified in `board-design/moglabs-remote-locking-board.txt` for the DigiKey electronics distributor, which can be imported directly into a DigiKey cart. Auxiliary parts (headers + DLC resistor) are similarly specified in `board-design/auxiliary-parts.txt`. An optional 3D-printable housing for the project can be found under `enclosure/`. 
+Part numbers and quantities for **two** PCBs are specified in `board-design/moglabs-remote-locking-board.txt` for the DigiKey electronics distributor, which can be imported directly into a DigiKey cart. This list is missing capacitors C6 and C7 (see table below). Auxiliary parts (headers + DLC resistor) are similarly specified in `board-design/auxiliary-parts.txt`. An optional 3D-printable housing for the project can be found under `enclosure/`. 
 
 Electronic design was done in KiCAD 6, and the (optional) enclosure was generated with FreeCAD 0.20.2.
 
@@ -117,31 +117,47 @@ Left: input for the error signal ('Lock'), photodiode signal ('PD') and trigger.
 
 Bottom left: power regulator to introduce +5V and -5V VDD and VSS rails from the board's 5V power pin.
 
-Right: analog frequency-offset output signal (J6) controlled by an external DAC (U4) and dual opamp (U3). The DAC output is divided down considerably, as a 1V adjustment to PZT MOD corresponds with about a third of the piezo's (i.e. frequency) range. A variable resistor gives additional control over the output voltage range.
+Right: analog frequency-offset output signal (J6) controlled by an external DAC (U4) and dual opamp (U3). The DAC output is divided down considerably, as a 1V adjustment to PZT MOD corresponds with about a third of the piezo's (i.e. frequency) range. A variable resistor gives additional control over the output voltage range (this will need to be tuned to observe an output signal).
 
 ![Soldered board](/assets/finished-board.jpg)
 
-A reference table is below. More info in the linked datasheets.
+The required parts for **one** PCB are in the tabe below. For specific part numbers, see the DigiKey text files specified above. Note that the capacitor numbering in the schamatic skips C8.
 
 Terminology:
 - 8-SOIC is a component shell size/type (comonly opamps, dacs)
-- "Example parts" are the ones used in the tested project
 - DAC: digital-to-analogue converter
 - SPI: Serial Peripheral Interface
 - SMD: Surface-mounted device
+- 1206: component size
 
-| Requirement / Part description | Example part | PCB Locations | Total Qty | Notes |
-| --- | --- | --- | --- | --- |
-| 12-Bit single-output DAC with SPI and internal voltage reference (2.048V/4.096V) | [MCP4821](https://www.microchip.com/en-us/product/MCP4821) | U... | 
-| 56 kOhm SMD resistor | ... | ... | ... | ... |
-| ... | ... | ... | ... | ... |
-
+| Requirement / Part description | PCB Locations | Total Qty | Notes |
+| --- | --- | --- | --- |
+| IC 8SOIC 12-Bit single-output DAC with SPI and internal voltage reference (2.048V/4.096V) | U4 | 1 | code assumes [MCP4821](https://www.microchip.com/en-us/product/MCP4821) |
+| IC 8SOIC JFET opamp 1-circuit | U1 | 1 | |
+| IC dual (2-circuit) opamp GP 8SOIC | U3 | 1 | |
+| ESP32 DevKitC VE (WROVER/WROOM) | U2 | 1 | |
+| 16-position 2.54mm female row header | J5, J9 | 2 | |
+| 2-pos 2.54mm male header | J1 | 1 | |
+| 50 kΩ potentiometer 0.5W | RV1 | 1 | |
+| DC DC converter dual 5V 1W | PS1 | 1 | |
+| BNC socket | J2, J3, J4, J6 | 4 | |
+| 40V 1A Schottky diode (SMD 1206) | D1,D2,D3,D4,D5 | 5 | |
+| 100 nanofarad 50V ceramic capacitor (SMD 1206) | C3, C4, C5, C9, C10 | 5 | |
+| Polarised through-hole capacitor 4.7 uF 25V | C1, C2 | 2 | |
+| 10 nF through-hole capacitor | C6 | 1 | Not on DigiKey list |
+| 100 nF through-hole capacitor | C7 | 1 | Not on DigiKey list |
+| 10 kΩ 0.5W resistor (SMD 1206) | R2, R3, R4, R7, R9 | 5 | |
+| 20 kΩ 0.5W resistor (SMD 1206) | R10 | 1 | |
+| 100 kΩ 0.5W resistor (SMD 1206) | R6, R12 | 2 | |
+| 3.9 kΩ 0.25W (SMD 1206) | R14 | 1 | |
+| 56 kΩ 0.25W resistor (SMD 1206) | R1 | 1 | |
 
 Optional headers for mounting the ESP32 devkit on the PCB:
-| Description | Example part | PCB Locations | Total Qty | Notes |
-| --- | --- | --- | --- | --- |
-| 19-position 2.54mm female header | PPTC191LFBN-RC | J7/J8 (not marked) | 2 |  |
-| 19-position male header for ESP32 | 2057-PH1-19-UA-ND | On ESP32 | 2 | Likely included with ESP32 devkit |
+
+| Description | PCB Locations | Total Qty | Notes |
+| --- | --- | --- | --- |
+| 19-position 2.54mm female header | J7 & J8 (not marked) | 2 |  |
+| 19-position male header for ESP32 | On ESP32 | 2 | Likely included with ESP32 devkit |
 
 
 #### Tests
@@ -183,9 +199,9 @@ The photodiode input offset and error signal offset can be adjusted respectively
 ##### **FREQUENCY CONTROL**
 Test the frequency control output (J6) before connecting, to ensure it is within the range +/- 0.2V. Before connecting, a 5kΩ resistor must be added at location R113 on the DLC's circuit board to allow adding an external frequency voltage offset.
 
-| Description | Example part | **DLC** location | Total Qty |
+| Description | **DLC** location | Total Qty |
 | --- | --- | --- | --- |
-| 5kΩ size 0603 SMD resistor | RMCF0603JT5K10 | R113 | 1 |
+| 5kΩ size 0603 SMD resistor  | R113 | 1 |
 
 Once this is added, connect J6 via BNC to the DLC's SWEEP/PZT MOD input.
 
@@ -362,8 +378,12 @@ See Last Minute Engineers and [the boot mode docs](https://docs.espressif.com/pr
 
 
 #### External DAC
-TODO: explain SPI interface with the MCP4821.
 
+This project uses the MCP4821 DAC to produce the frequency-adjustment signal, controlled from the ESP32 via serial peripheral interface (SPI).
+
+The ESP32 has two SPI buses available for general use: SPI2 (HSPI) and SPI3 (VSPI). 'H' and 'V' don't signify anything. Any pins can be set as the corresponding interface pins; the defaults are indicated in the pinout diagram, but in this project non-default pins are used.
+
+SPI communication with the MCP4821 is explained in its datasheet. Briefly: chip-select is driven LOW to initiate each data transfer, then 16 bits are transferred: four config bits followed by 12 value bits. The value bits are stored in the DAC's input register, and transferred to the output (Vout) when LDACn is pulled low. The current software keeps LDACn permanently low, so that the input value is transferred immediately to output.
 
 ### Software design
 This section gives a general overview as well as some relevant details of the code. Many more comments are scattered throughout the source.
@@ -389,11 +409,12 @@ Messages sent from client to the board to control the laser frequency offset are
 
 ### TODO
 - Save HD12 & DAC settings on reset
+  - Allow config file to be modified remotely?
 - DLC-safe reset procedure
-- Improved code comments
 - Look into uploading the config file Over-The-Air.
-- Vertical DIV scaling
+- Vertical DIV scaling on display, independently for photodiode and error signals.
 - "Invert signal" button
+- Reset sample-settings sliders to their previous value if HTTP POST message fails.
 
 ### Suggested improvements
 - Mobile-friendly webpage (cf. `@media-query`)
