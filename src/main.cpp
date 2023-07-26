@@ -16,6 +16,9 @@ General notes:
 #include <SPI.h>
 #include <WiFi.h>
 
+#include <secrets.h> // in scr make a seacrets.h file and define the SSID and password MAke sure this is part of .gitignore
+
+
 /* Pin mappings. With the Arduino framework, the pin number is the
 ESP32 GPIO number (at least by default in PlatformIO)*/
 #define PD_INPUT_PIN 39
@@ -154,6 +157,9 @@ void IRAM_ATTR onTrig() {
   trig_time = micros();
 }
 
+
+//#################################SETUP#############################################//
+
 // Setup code, is run once upon restart.
 void setup() {
   // dac.begin(VSPI_CS);
@@ -249,6 +255,7 @@ void setup() {
 
   if (host) { // Set up own network
     // wifi_set_phy_mode(PHY_MODE_11G);
+    //get these from the secrets.h file
     const char *host_ssid = configDoc["host_ssid"];
     const char *host_password = configDoc["host_password"];
     if (!(host_ssid && host_password)) {
@@ -275,15 +282,15 @@ void setup() {
     Serial.println(WiFi.softAPIP());
 
   } else { // Connect to existing network
-    const char *ssid = configDoc["ssid"];
-    const char *password = configDoc["password"]; // NULL if missing
+    const char *ssid = SECRET_WIFI_SSID;   // set these in secrets.h
+    const char *password = SECRET_WIFI_PASSWORD; // NULL if missing
     if (!ssid) {                                  // If password missing, will be assumed no password.
       Serial.println("Missing WiFi ssid.");
     }
     WiFi.mode(WIFI_STA);
-    if (!WiFi.config(local_ip, gateway, subnet)) {
+    /*if (!WiFi.config(local_ip, gateway, subnet)) {
       Serial.println("IP config failed.");
-    }
+    }*/
     if (password == NULL) { /*strcmp(password, "") == 0*/
       WiFi.begin(ssid);
     } else {
@@ -398,8 +405,11 @@ void setup() {
   packet_start = micros(); // Will be a slight delay before the first packet.
 }
 
+//#################################LOOP#############################################//
+
 // Is run repeatedly after setup()
 void loop() {
+  //Serial.print("start\n");
   if (ws.count() == 0) { // ws.count() is number of connected websocket clients
     // Nobody's listening, wait. Otherwise will not allow the page to load.
     delay(10);
