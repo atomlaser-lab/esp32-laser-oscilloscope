@@ -436,7 +436,8 @@ void loop() {
         StaticJsonDocument<200> heraldDoc; // Meta-data to precede measurement packet
         heraldDoc["start"] = (double)(packet_start / 1000.0);
         heraldDoc["elapsed"] = (double)(elapsed / 1000.0);
-        heraldDoc["trigTime"] = trig_time / 1000.0; // will be 0 if no trigger occurred.
+        heraldDoc["trigTime"] = (double)(packet_start / 1000.0)+(double)(elapsed / 1000.0)/2; // hack this to alwasys have a triger mid run
+        //heraldDoc["trigTime"] = trig_time / 1000.0; // will be 0 if no trigger occurred.
         String heraldStr;
         serializeJson(heraldDoc, heraldStr);
         ws.textAll(heraldStr);
