@@ -322,24 +322,33 @@ const updateDisplay = (() => {
   function renderPacket(packet, trigtime) {
     // TODO: highlight clipped signals in red.
     const pd_meas = packet.pd_measurements;
+    pd_meas_min = Math.min(... pd_meas);
+    for(var i = 0; i < pd_meas.length; i++) { pd_meas[i] = pd_meas[i]-pd_meas_min; }
+
     const error_meas = packet.error_measurements;
+    error_meas_min = Math.min(... error_meas);
+    for(var i = 0; i < error_meas.length; i++) { error_meas[i] = error_meas[i]-error_meas_min; }
+
     const px_per_datapoint = px_per_ms * packet.elapsed / pd_meas.length;
     const offset = px_per_ms * (packet.start - trigtime);
-    const px_per_voltbit = 0.75 * height / 255;
+    // sort out auto range
+
+    const pd_px_per_voltbit = 1/Math.max(... pd_meas) * height / 2.5;
+    const err_px_per_voltbit = 1/Math.max(... error_meas) * height/2.5;
     // Photodiode
     dataCtx.strokeStyle = "#ffff00"; // Colour for PD signal
     dataCtx.beginPath();
-    dataCtx.moveTo(offset, pd_meas[0] * px_per_voltbit);
+    dataCtx.moveTo(offset, pd_meas[0] * pd_px_per_voltbit); //here need to map this to auto scale
     for (let i = 1; i < pd_meas.length; i++) {
-      dataCtx.lineTo(offset + i * px_per_datapoint, pd_meas[i] * px_per_voltbit);
+      dataCtx.lineTo(offset + i * px_per_datapoint, pd_meas[i] * pd_px_per_voltbit);
     }
     dataCtx.stroke();
     // Error signal
     dataCtx.strokeStyle = "#D62839"; // Colour for Error signal
     dataCtx.beginPath();
-    dataCtx.moveTo(offset, error_meas[0] * px_per_voltbit);
+    dataCtx.moveTo(offset, error_meas[0] * err_px_per_voltbit);
     for (let i = 1; i < error_meas.length; i++) {
-      dataCtx.lineTo(offset + i * px_per_datapoint, error_meas[i] * px_per_voltbit);
+      dataCtx.lineTo(offset + i * px_per_datapoint, error_meas[i] * err_px_per_voltbit);
     }
     dataCtx.stroke();
   }
@@ -367,7 +376,7 @@ const updateDisplay = (() => {
       /* The data-rendeing canvas has twice the
       width, and the centre corresponds with the trigger point. Its origin is
       set at the middle, vOffset from the top. The vertical axis is *not* flipped, to make it easier to copy it right-way-up to the main canvas. */
-      vOffset = height / 10; // Distance of 0V from the bottom
+      vOffset = height / 100; // Distance of 0V from the bottom
       hiddenDataCanvas.width = 2 * width;
       hiddenDataCanvas.height = 2 * height;
       dataCtx.setTransform(1, 0, 0, 1, width, vOffset);

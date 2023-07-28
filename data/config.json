@@ -1,6 +1,6 @@
 {
-  "name": "OpticalClock",
-  "host": true,
+  "name": "MOGTEST",
+  "host": false,
   "host_ssid": "ESP32_Laser_Lock",
   "host_password": "laserlock",
   "host_channel": 3,

@@ -64,6 +64,7 @@ uint64_t packet_start;  // Packet start time (microseconds);
 uint64_t elapsed = 0;   // Since start of packet (microseconds)
 unsigned int N = 0;     // Datapoint index in current packet
 uint64_t trig_time = 0; // Most recent trigger time (microseconds)
+int trig_last = 0;     // What the last trigger read was
 
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
@@ -153,10 +154,10 @@ void settingsHandler(AsyncWebServerRequest *request, JsonVariant &json) {
 
 /* Record the time of a trigger interrupt. Interrupts need to be in IRAM for
 fast access (hence IRAM_ATTR). */
-void IRAM_ATTR onTrig() {
+/*void IRAM_ATTR onTrig() {
   trig_time = micros();
 }
-
+*/
 
 //#################################SETUP#############################################//
 
@@ -196,7 +197,7 @@ void setup() {
   pinMode(PD_INPUT_PIN, INPUT);   // Photodiode channel.
   pinMode(LOCK_INPUT_PIN, INPUT); // Error signal.
   pinMode(TRIG_PIN, INPUT);
-  attachInterrupt(TRIG_PIN, onTrig, RISING); // Record any triggers
+  //attachInterrupt(TRIG_PIN, onTrig, RISING); // Record any triggers
 
   // Begin filesystem
   if (!LittleFS.begin()) {
@@ -405,6 +406,18 @@ void setup() {
   packet_start = micros(); // Will be a slight delay before the first packet.
 }
 
+
+//define a bit of stuff for in the loop
+int trig_now;
+bool measure;
+bool send_data;
+int trig_index;
+int time_res = 500; //us - for now, lets hard code this
+bool active;
+int i;
+uint16_t Photo_diode_ADC;
+uint16_t Error_signal_ADC;
+uint64_t time_start;
 //#################################LOOP#############################################//
 
 // Is run repeatedly after setup()
@@ -413,43 +426,114 @@ void loop() {
   if (ws.count() == 0) { // ws.count() is number of connected websocket clients
     // Nobody's listening, wait. Otherwise will not allow the page to load.
     delay(10);
-    packet_start = micros();
-    N = 0;
+    //packet_start = micros();
+    //N = 0;
     return;
   }
 
+  /*
   elapsed = micros() - packet_start;
   if (elapsed < 0) {
     // TODO: handle micros() rollover here.
   }
+  */
 
-  if (elapsed >= time_resolution * N) {
-    // Record a new measurement (reducing 12-bit ESP32 ADC resolution to 1 byte)
-    input_buffer[2 * N] = (uint8_t)(analogRead(PD_INPUT_PIN) >> 4);           // Photodiode
-    input_buffer[2 * (N++) + 1] = (uint8_t)(analogRead(LOCK_INPUT_PIN) >> 4); // Error signal
-    // Check if finished packet
-    if ((elapsed >= sample_duration) || N >= CHANNEL_BUFFER_SIZE) {
-      // Send data
+  //at this point we want to measure a trace.
+  //read the trigger input
+  trig_now = digitalRead(TRIG_PIN);
+  measure = false;
+  send_data = false;
+
+  if (trig_now==0 && trig_last==1 && !send_data){
+    //start the measurment
+    measure = true;
+    trig_last = trig_now;
+    delayMicroseconds(10);
+    //Serial.print("starting measure\n");
+  }
+  trig_index = 0;
+  N=0;
+  packet_start = micros();
+  while (measure) {
+
+    //Start recording data for a new point
+    active = true;
+    i=0;
+    Photo_diode_ADC = 0;
+    Error_signal_ADC = 0;
+    time_start = micros();
+    while (active){
+      //Check the trigger situation
+      trig_now = digitalRead(TRIG_PIN);
+      if (trig_last==0 && trig_now==1){
+        //center of scan reaced. Mark index
+        trig_index = N;
+        Serial.printf("Trig N = %d\n",trig_index);
+      }
+      if (trig_last==1 && trig_now==0){
+        //end of scan reached. End measure
+        Serial.printf("End Measure N = %d\n",N);
+        measure = false;
+        send_data = true; //request to send data
+        delayMicroseconds(10);
+        break;
+      }
+      if(N>CHANNEL_BUFFER_SIZE){
+        measure = false;
+        send_data = true; //request to send data
+        delayMicroseconds(10);
+        break;
+      }
+      //average ADC down while less than time_res
+      Photo_diode_ADC = ((uint16_t)analogRead(PD_INPUT_PIN) + Photo_diode_ADC*i)/(i+1);   // Photodiode
+      Error_signal_ADC = ((uint16_t)analogRead(LOCK_INPUT_PIN) + Error_signal_ADC*i)/(i+1);   // Error signal
+      if (micros()-time_start>=time_res){
+        //Serial.printf("i = %d\n",i);
+        //measurment point done. Store value and start again
+        input_buffer[2 * N] = (uint8_t)(Photo_diode_ADC >> 4);           // Photodiode
+        input_buffer[2 * N + 1] = (uint8_t)(Error_signal_ADC >> 4); // Error signal
+        //TODO: actualy record the times as well instead of assuming
+        active = false; //break out of the measurment
+      }
+      i++;
+      trig_last = trig_now; //set what the last trigger measure was.
+    }
+  N++;
+  //Serial.printf("Data N = %d\n",N);
+
+  }
+  //Serial.printf("Trig N = %d\n",trig_index);
+  trig_last = trig_now; //set what the last trigger measure was.
+  elapsed = micros() - packet_start;
+
+
+  if (send_data){
       ws.cleanupClients(); // Release improperly-closed connections
       if (ws.availableForWriteAll()) {
+        //Serial.printf("Trig N = %d\n",trig_index);
         // Send metadata
         StaticJsonDocument<200> heraldDoc; // Meta-data to precede measurement packet
         heraldDoc["start"] = (double)(packet_start / 1000.0);
         heraldDoc["elapsed"] = (double)(elapsed / 1000.0);
-        heraldDoc["trigTime"] = (double)(packet_start / 1000.0)+(double)(elapsed / 1000.0)/2; // hack this to alwasys have a triger mid run
-        //heraldDoc["trigTime"] = trig_time / 1000.0; // will be 0 if no trigger occurred.
+        // heraldDoc["trigTime"] = (double)(packet_start / 1000.0)+(double)(elapsed / 1000.0)/2; // hack this to alwasys have a triger mid run
+        heraldDoc["trigTime"] = (double)((packet_start+trig_index*time_res) / 1000.0); 
         String heraldStr;
         serializeJson(heraldDoc, heraldStr);
         ws.textAll(heraldStr);
         // Send measurement packet
         ws.binaryAll(input_buffer, 2 * N);
         /* Final argument is number of BYTES to send.*/
+        delay(50);
+        // Start new packet
+        N = 0;
+        trig_time = 0;
+        time_resolution = next_resolution;
+        packet_start = micros();
+        send_data = false;
+        trig_now=0;
+        trig_last=0;
       }
-      // Start new packet
-      N = 0;
-      trig_time = 0;
-      time_resolution = next_resolution;
-      packet_start = micros();
+      delayMicroseconds(1000);
     }
-  }
+    delayMicroseconds(10);
 }
