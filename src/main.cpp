@@ -9,12 +9,9 @@ General notes:
 */
 
 #include <Arduino.h>           // Framework
-#include <ArduinoJSON.h>       // https://arduinojson.org/
-#include <AsyncJson.h>         // For handling JSON packets
-#include <ESPAsyncWebServer.h> // https://github.com/me-no-dev/ESPAsyncWebServer
-#include <LittleFS.h>          // File-system
 #include <SPI.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
 
 #include <secrets.h> // in scr make a seacrets.h file and define the SSID and password MAke sure this is part of .gitignore
 
@@ -46,15 +43,17 @@ bool fast_lock = false;
 bool hold = false;
 bool laser_on = false;
 
+
+//ESP32 has 512kbit of RAM
 /* Settings and storage for data sampling. Resolution and duration are specified externally (client, config file) in milliseconds, but are handled
 internally in microseconds.*/
 #define MIN_RES 100               // microseconds. int.
 #define MIN_DURATION 30000.0      // Else ESP32 can become unresponsive. Float.
 #define MAX_DURATION 20000000.0   // 20 sec. (float)
-#define CHANNEL_BUFFER_SIZE 16384 // 16KB per channel, enough for 10s data at 1ms resolution.
+#define CHANNEL_BUFFER_SIZE 1000 // 16KB per channel, enough for 10s data at 1ms resolution.
 /* A new packet will be started if the buffer gets full, regardless of sampling
 settings*/
-uint8_t input_buffer[2 * CHANNEL_BUFFER_SIZE]; // Alternating PD & error samples.
+uint8_t input_buffer[2 * CHANNEL_BUFFER_SIZE]; // Alternating PD, error and time samples.
 
 unsigned int time_resolution = 2000;  // Microseconds
 unsigned int next_resolution = 2000;  // For next packet.
@@ -66,22 +65,19 @@ unsigned int N = 0;     // Datapoint index in current packet
 uint64_t trig_time = 0; // Most recent trigger time (microseconds)
 int trig_last = 0;     // What the last trigger read was
 
-// Create AsyncWebServer object on port 80
-AsyncWebServer server(80);
-AsyncWebSocket ws("/ws");
 
 // Send value to external MCP4821 DAC.
 // Similar to https://cyberblogspot.com/how-to-use-mcp4921-dac-with-arduino/
 // but the bytes sent have been adjusted so it works.
 void set12BitDAC(uint16_t value) {
-  Serial.println(value);
+  Serial.printf("ADC: %d\n", value);
   uint16_t data = 0b0001000000000000 | value; // could go directly to secondByte
   // 4 config bits + most significant 4 value bits
   uint8_t firstByte = 0b00010000 | ((uint8_t)((value & 0xFFF) >> 8));
   // remaining 8 value bits
   uint8_t secondByte = (uint8_t) data;
-  //Serial.println(firstByte, BIN);
-  //Serial.println(secondByte, BIN);
+  Serial.println(firstByte, BIN);
+  Serial.println(secondByte, BIN);
   digitalWrite(vspi->pinSS(), LOW); // VSPI_CS; pull low to prep other end for transfer
   /* Use SPI clock rate 16MHz (MCP4821 supports up to 20MHz). We use SPI_MODE0,
   where the clock is LOW when idle and data is transferred on the rising edge.*/
@@ -95,69 +91,45 @@ void set12BitDAC(uint16_t value) {
    permanently LOW in setup().*/
 }
 
-/* Handle an incoming WebSocket message. These are expected to be 12-bit
-level values for the external MCP4821 DAC. */
-void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
-  AwsFrameInfo *info = (AwsFrameInfo *)arg;
-  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_BINARY) {
-    /* Received a single binary packet. This is expected to contain two bytes,
-    forming a 16 bit integer (most-significant byte first). The 12
-    least-significant bits are our DAC value. */
-    set12BitDAC((((uint16_t)data[0]) << 8) | ((uint16_t)data[1]));
-    // Obsolete: dacWrite(pin, 8-bit value) for ESP32's inbuilt 8-bit DAC.
+void data_in(char* input){
+  //first check for laser controlls
+  //Serial.println(input);
+  if(strcmp (input,"enable_slow")==0) {
+    digitalWrite(SLOW_LOCK_PIN, HIGH);
+    Serial.println("locking slow");
+    return;
   }
-}
-
-// Handler for WebSocket events
-void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
-  switch (type) {
-  case WS_EVT_CONNECT:
-    Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-    break;
-  case WS_EVT_DISCONNECT:
-    // Could initiate sleep here.
-    Serial.printf("WebSocket client #%u disconnected\n", client->id());
-    break;
-  case WS_EVT_DATA:
-    handleWebSocketMessage(arg, data, len);
-    break;
-  case WS_EVT_PONG:
-  case WS_EVT_ERROR:
-    break;
-    // I'm fairly sure this exhausts all possible event types.
+    if(strcmp (input,"enable_fast")==0) {
+    digitalWrite(FAST_LOCK_PIN, HIGH);
+    Serial.println("locking fast");
+    return;
   }
-}
+    if(strcmp (input,"disable_fast")==0) {
+    digitalWrite(FAST_LOCK_PIN, LOW);
+    Serial.println("unlocking fast");
+    return;
+  }
+    if(strcmp (input,"disable_slow")==0) {
+    digitalWrite(SLOW_LOCK_PIN, LOW);
+    Serial.println("unlocking slow");
+    return;
+  }
+  //now if possible convert to a number and then send to ADC
+  uint16_t forADC = atoi(input);
+  set12BitDAC(forADC);
 
-// Update
-void setSampleSettings(double resolution, double duration) {
-  /* Arguments are in milliseconds and converted to microseconds for
-  next_resolution and sample_duration. Duration takes effect immediately but
-  resolution waits until a new packet, so that samples remain evenly spaced. */
-  next_resolution = max((int)(resolution * 1000), MIN_RES); // Hard limit 0.1ms res
-  sample_duration = (int)min(max(
-                                 max(duration * 1000, 2.0 * next_resolution), MIN_DURATION),
-                             MAX_DURATION);
-  /* Hard duration min 30ms and max 20sec, else ESP can become unresponsive.
-  Also enforce duration > 2*resolution, to ensure >1 samples. */
-  Serial.println(" Sampling settings set to:");
-  Serial.printf("  Resolution: %.1f ms\n", next_resolution / 1000.0);
-  Serial.printf("  Duration: %.1f ms\n", sample_duration / 1000.0);
-  Serial.println();
-}
 
-// Handle a HTTP request to update sampling settings
-void settingsHandler(AsyncWebServerRequest *request, JsonVariant &json) {
-  const JsonObject &jsonObj = json.as<JsonObject>();
-  setSampleSettings(jsonObj["resolution"], jsonObj["duration"]);
-  request->redirect("/get_sample_settings");
 }
+// Specify maximum UDP packet size
+#define MAX_PACKET_SIZE 512
 
-/* Record the time of a trigger interrupt. Interrupts need to be in IRAM for
-fast access (hence IRAM_ATTR). */
-/*void IRAM_ATTR onTrig() {
-  trig_time = micros();
-}
-*/
+// Specify UDP port to listen on
+unsigned int localPort = 9999;
+
+// Create data array for storing the received UDP packet data payload
+char packetData[MAX_PACKET_SIZE];
+
+WiFiUDP Udp;
 
 //#################################SETUP#############################################//
 
@@ -166,6 +138,10 @@ void setup() {
   // dac.begin(VSPI_CS);
   //  Serial port for debugging purposes
   Serial.begin(115200); // 115200 is baud rate (symbol communication rate)
+
+  //clear out the packet data array
+  for( int i = 0; i < sizeof(packetData);  ++i )
+   packetData[i] = (char)0;
 
   // Output pins
   pinMode(LED_PIN, OUTPUT); // ESP32 devkit onboard LED
@@ -199,51 +175,6 @@ void setup() {
   pinMode(TRIG_PIN, INPUT);
   //attachInterrupt(TRIG_PIN, onTrig, RISING); // Record any triggers
 
-  // Begin filesystem
-  if (!LittleFS.begin()) {
-    Serial.println("An error has occurred while mounting LittleFS.");
-  }
-
-  // Load config from JSON file.
-  File configFile = LittleFS.open("/config.json", "r");
-  if (!configFile) {
-    Serial.println("Unable to access configuration file.");
-  }
-
-  StaticJsonDocument<512> configDoc;
-  DeserializationError error = deserializeJson(configDoc, configFile);
-  if (error) {
-    Serial.println("Invalid configuration file.");
-  }
-
-  static char name[100];
-  strcpy(name, configDoc["name"]); // Laser display name (Defaults to NULL)
-
-  // Default sampling settings
-  const double configRes = configDoc["default_resolution"];
-  const double configDur = configDoc["default_duration"];
-  setSampleSettings(
-      configRes ? configRes : 2.0,
-      configDur ? configDur : 60.0);
-
-  // WiFi details
-  const bool host = configDoc["host"]; /* Whether to host own network (mainly
-  for testing). If not found in the config file, this value will default to
-  false (zero). */
-
-  // Network defaults
-  IPAddress local_ip(192, 168, 1, 1); // How we appear to other devices on the network
-  IPAddress gateway(192, 168, 1, 1);  /* local device through which connections
-  external to the local network are routed (i.e. in this case, the board).
-  These connections will fail, because the board isn't connected to the
-  internet.*/
-  IPAddress subnet(255, 255, 255, 0); // Allows extraction of network address from local address
-
-  const char *ip_str = configDoc["default_ip"];
-  if (ip_str) {
-    local_ip.fromString(ip_str);
-    gateway.fromString(ip_str);
-  }
 
   /* Connect to Wi-Fi. Modes:
   - Station (STA): connects to existing WiFi.
@@ -254,156 +185,35 @@ void setup() {
   WiFi.disconnect();
   // WiFi.setAutoConnect(false);
 
-  if (host) { // Set up own network
-    // wifi_set_phy_mode(PHY_MODE_11G);
-    //get these from the secrets.h file
-    const char *host_ssid = configDoc["host_ssid"];
-    const char *host_password = configDoc["host_password"];
-    if (!(host_ssid && host_password)) {
-      Serial.println("Missing host_ssid or host_password.");
-    }
-    if (strlen(host_password) < 8) {
-      Serial.println("Warning: WiFi.softAP (hosting) will fail if host_password has fewer than 8 characters.");
-    }
-    int host_channel = configDoc["host_channel"]; // Specifies the WiFi frequency band. 1-11 is fairly safe in most countries. Default is 1.
-    if (!host_channel) {
-      host_channel = 1;
-    }
-    const int max_connection = 1;
-    /* Prevents multiple clients. From the documentation: "Once the max number
-    has been reached, any other station that wants to connect will be forced
-    to wait until an already connected station disconnects."*/
-    WiFi.mode(WIFI_AP);
-    Serial.print("Setting soft-AP configuration ... ");
-    Serial.println(WiFi.softAPConfig(local_ip, gateway, subnet) ? "Ready" : "Failed!");
-    Serial.print("Setting soft-AP ... ");
-    Serial.println(WiFi.softAP(host_ssid, host_password, host_channel, false, max_connection) ? "Ready" : "Failed!");
-    // Pretty sure this uses WPA2 security protocol (i.e. the most common).
-    Serial.print("Soft-AP IP address = ");
-    Serial.println(WiFi.softAPIP());
-
-  } else { // Connect to existing network
-    const char *ssid = SECRET_WIFI_SSID;   // set these in secrets.h
-    const char *password = SECRET_WIFI_PASSWORD; // NULL if missing
-    if (!ssid) {                                  // If password missing, will be assumed no password.
-      Serial.println("Missing WiFi ssid.");
-    }
-    WiFi.mode(WIFI_STA);
-    /*if (!WiFi.config(local_ip, gateway, subnet)) {
-      Serial.println("IP config failed.");
-    }*/
-    if (password == NULL) { /*strcmp(password, "") == 0*/
-      WiFi.begin(ssid);
-    } else {
-      WiFi.begin(ssid, password);
-    }
-    Serial.print("Connecting to WiFi.");
-    while (WiFi.status() != WL_CONNECTED) {
-      delay(1000);
-      Serial.print(".");
-    }
-    // Print ESP Local IP Address
-    Serial.print("\nConnected. Local IP Address: ");
-    Serial.println(WiFi.localIP());
-
-    WiFi.setAutoReconnect(true);
+  // Connect to existing network
+  const char *ssid = SECRET_WIFI_SSID;   // set these in secrets.h
+  const char *password = SECRET_WIFI_PASSWORD; // NULL if missing
+  if (!ssid) {                                  // If password missing, will be assumed no password.
+    Serial.println("Missing WiFi ssid.");
   }
+  WiFi.mode(WIFI_STA);
+  /*if (!WiFi.config(local_ip, gateway, subnet)) {
+    Serial.println("IP config failed.");
+  }*/
+  if (password == NULL) { /*strcmp(password, "") == 0*/
+    WiFi.begin(ssid);
+  } else {
+    WiFi.begin(ssid, password);
+  }
+  Serial.printf("Connecting to WiFi: %s.",ssid);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+  // Print ESP Local IP Address
+  Serial.print("\nConnected. Local IP Address: ");
+  Serial.println(WiFi.localIP());
 
-  // Serve webpage and handle Websocket events
-  server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
-  /* Alternative method:
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(LittleFS, "/index.html", "text/html", false);
-    // Or: request->redirect("/index.html"); });
-  });*/
+  WiFi.setAutoReconnect(true);
 
-  // Add WebSocket handler
-  ws.onEvent(onWsEvent);
-  server.addHandler(&ws);
+  //start UDP listen
+  Udp.begin(localPort);
 
-  // Handle commands (square bracket notation begins an anonymous function)
-  server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
-    StaticJsonDocument<300> statusDoc;
-    statusDoc["name"] = name; // name is static, so can be used in lambda func.
-    statusDoc["slow"] = slow_lock;
-    statusDoc["fast"] = fast_lock;
-    /* Would be convenient to just read the state of the pins directly,
-    but this is unreliable as they are set to OUTPUT mode.*/
-    String statusStr = "";
-    serializeJson(statusDoc, statusStr);
-    request->send(200, "text/plain", statusStr);
-  });
-  server.on("/enable_slow", HTTP_POST, [](AsyncWebServerRequest *request) {
-    digitalWrite(SLOW_LOCK_PIN, HIGH);
-    slow_lock = true;
-    request->send(200);
-  });
-  server.on("/enable_fast", HTTP_POST, [](AsyncWebServerRequest *request) {
-    digitalWrite(FAST_LOCK_PIN, HIGH);
-    fast_lock = true;
-    request->send(200);
-  });
-  server.on("/disable_fast", HTTP_POST, [](AsyncWebServerRequest *request) {
-    digitalWrite(FAST_LOCK_PIN, LOW);
-    fast_lock = false;
-    request->send(200);
-  });
-  server.on("/disable_slow", HTTP_POST, [](AsyncWebServerRequest *request) {
-    digitalWrite(SLOW_LOCK_PIN, LOW);
-    slow_lock = false;
-    request->send(200);
-  });
-  server.on("/get_sample_settings", HTTP_GET, [](AsyncWebServerRequest *request) {
-    /* Tell client what the current sampling settings are */
-    StaticJsonDocument<200> settingsDoc;
-    settingsDoc["duration"] = (double)(sample_duration / 1000.0);
-    settingsDoc["resolution"] = (double)(time_resolution / 1000.0);
-    String settingsStr = "";
-    serializeJson(settingsDoc, settingsStr);
-    request->send(200, "text/plain", settingsStr);
-  });
-
-  /* Handler for receiving sampling settings as JSON. Two possible methods
-   for this (see https://github.com/me-no-dev/ESPAsyncWebServer/issues/195) */
-  server.addHandler(new AsyncCallbackJsonWebHandler(
-      "/set_sample_settings",
-      settingsHandler, 1024)); // Last argument is max JSON bytesize
-
-  /* Alternative pattern: handle chunked reception of body manually.
-  server.on("/set_sample_settings", HTTP_POST,
-    [](AsyncWebServerRequest *request) {
-      // Request handler code here. This will be run AFTER all body chunks have been received. The bodyHandler below collects the entire body into request->_tempObject, which you can use here to access the body.
-      //e.g.
-      DynamicJsonBuffer jsonBuffer;
-      JsonObject &root = jsonBuffer.parseObject((const char *)(request->_tempObject));
-      if (root.success()) {
-          if (root.containsKey("command")) {
-            Serial.println(root["command"].asString()); // Hello
-          }
-        }
-    }, NULL,
-    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) { // Body chunk handler
-      // data is chunk bytes, len its bytelength, index which chunk it is, and total the total expected number of bytes.
-      if (total > 0 && request->_tempObject == NULL && total < 10240) { // you may use your own size instead of 10240
-      request->_tempObject = malloc(total); // Create temporary storage
-      }
-      if (request->_tempObject != NULL) {
-        // Add chunk to temporary storage
-        memcpy((uint8_t*)(request->_tempObject) + index, bodyData, bodyLen);
-      }
-    }
-  });
-  */
-
-  // All other requests should fail.
-  server.onNotFound([](AsyncWebServerRequest *request) {
-    Serial.println("Requested page not found.");
-    request->send(404);
-  });
-
-  // Start server
-  server.begin();
-  packet_start = micros(); // Will be a slight delay before the first packet.
 }
 
 
@@ -411,8 +221,8 @@ void setup() {
 int trig_now;
 bool measure;
 bool send_data;
-int trig_index;
-int time_res = 500; //us - for now, lets hard code this
+uint16_t trig_index;
+int time_res = 1; //us - for now, lets hard code this
 bool active;
 int i;
 uint16_t Photo_diode_ADC;
@@ -423,13 +233,6 @@ uint64_t time_start;
 // Is run repeatedly after setup()
 void loop() {
   //Serial.print("start\n");
-  if (ws.count() == 0) { // ws.count() is number of connected websocket clients
-    // Nobody's listening, wait. Otherwise will not allow the page to load.
-    delay(10);
-    //packet_start = micros();
-    //N = 0;
-    return;
-  }
 
   /*
   elapsed = micros() - packet_start;
@@ -444,7 +247,7 @@ void loop() {
   measure = false;
   send_data = false;
 
-  if (trig_now==0 && trig_last==1 && !send_data){
+  if (!send_data){
     //start the measurment
     measure = true;
     trig_last = trig_now;
@@ -465,14 +268,14 @@ void loop() {
     while (active){
       //Check the trigger situation
       trig_now = digitalRead(TRIG_PIN);
-      if (trig_last==0 && trig_now==1){
+      if (N==200){
         //center of scan reaced. Mark index
         trig_index = N;
-        Serial.printf("Trig N = %d\n",trig_index);
+        //Serial.printf("Trig N = %d\n",trig_index);
       }
-      if (trig_last==1 && trig_now==0){
+      if (N==400){
         //end of scan reached. End measure
-        Serial.printf("End Measure N = %d\n",N);
+        //Serial.printf("End Measure N = %d\n",N);
         measure = false;
         send_data = true; //request to send data
         delayMicroseconds(10);
@@ -498,8 +301,8 @@ void loop() {
       i++;
       trig_last = trig_now; //set what the last trigger measure was.
     }
-  N++;
-  //Serial.printf("Data N = %d\n",N);
+    N++;
+    //Serial.printf("Data N = %d\n",N);
 
   }
   //Serial.printf("Trig N = %d\n",trig_index);
@@ -508,32 +311,63 @@ void loop() {
 
 
   if (send_data){
-      ws.cleanupClients(); // Release improperly-closed connections
-      if (ws.availableForWriteAll()) {
-        //Serial.printf("Trig N = %d\n",trig_index);
-        // Send metadata
-        StaticJsonDocument<200> heraldDoc; // Meta-data to precede measurement packet
-        heraldDoc["start"] = (double)(packet_start / 1000.0);
-        heraldDoc["elapsed"] = (double)(elapsed / 1000.0);
-        // heraldDoc["trigTime"] = (double)(packet_start / 1000.0)+(double)(elapsed / 1000.0)/2; // hack this to alwasys have a triger mid run
-        heraldDoc["trigTime"] = (double)((packet_start+trig_index*time_res) / 1000.0); 
-        String heraldStr;
-        serializeJson(heraldDoc, heraldStr);
-        ws.textAll(heraldStr);
-        // Send measurement packet
-        ws.binaryAll(input_buffer, 2 * N);
-        /* Final argument is number of BYTES to send.*/
-        delay(50);
-        // Start new packet
-        N = 0;
-        trig_time = 0;
-        time_resolution = next_resolution;
-        packet_start = micros();
-        send_data = false;
-        trig_now=0;
-        trig_last=0;
-      }
-      delayMicroseconds(1000);
+    //broadcast the data over UDP (we realy dont care if we miss a few packets, we just want the data fast.)
+    //Serial.printf("Trig N = %d\n",trig_index);
+    //broadcast to 192.169.1.255:9001
+    Udp.beginPacket(IPAddress(192,168,1,255), 9001);
+    //packet structure first unit16 is remaining number of bytes
+    uint8_t temp_array[2];
+    uint16_t data_lengnth = N*2;
+    temp_array[0]=data_lengnth & 0xff;
+    temp_array[1]=(data_lengnth >> 8);
+    Udp.write(temp_array[0]);
+    Udp.write(temp_array[1]);
+
+    //2nd uint16 is the trigger index
+    temp_array[0]=trig_index & 0xff;
+    temp_array[1]=(trig_index >> 8);
+    Udp.write(temp_array[0]);
+    Udp.write(temp_array[1]);
+    //the remaining is uint8 interleaved chan1 and 2
+    for (int i =0; i < 2*N; i++)
+    {
+      Udp.write(input_buffer[i]);
     }
-    delayMicroseconds(10);
+    Udp.endPacket();   
+    //Serial.printf("sent bytes: %d\n",(N+1)*2);
+    
+
+    // Process received packet
+    int packetSize = Udp.parsePacket();
+
+    if (packetSize > MAX_PACKET_SIZE)
+    {
+      packetSize = MAX_PACKET_SIZE;
+    }
+    // If a packet was received
+    if (packetSize)
+    {
+      // Read the received UDP packet data
+      Udp.read(packetData,MAX_PACKET_SIZE);
+      //Serial.println(packetData);
+      //check that this starts with a # otherwise ignore it
+      if (packetData[0]!='#')
+        return;
+
+      //things to do, set ADC or lock.unlock fast or slow
+      data_in(&packetData[1]);
+
+    } 
+    //clear out the packet
+    packetData[0] = (char)0;
+    // Start new packet
+    N = 0;
+    trig_time = 0;
+    time_resolution = next_resolution;
+    packet_start = micros();
+    send_data = false;
+    trig_now=0;
+    trig_last=0;
+    delay(10);
+  }
 }

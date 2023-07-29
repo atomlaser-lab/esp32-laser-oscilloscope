@@ -1,0 +1,18 @@
+% ip is 192.168.1.143
+
+
+u = udpport("IPV4","LocalPort",9001,"Timeout",1);
+% u = udpport("datagram","IPV4")
+
+write(u,'test',"char","192.168.1.143",9999);
+
+
+while (true)
+    if (u.NumBytesAvailable>0)
+            data = read(u,u.NumBytesAvailable,"uint16")
+    end
+
+end
+
+flush(u);
+clear u
