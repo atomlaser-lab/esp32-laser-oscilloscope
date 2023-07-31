@@ -65,6 +65,7 @@ unsigned int N = 0;     // Datapoint index in current packet
 uint64_t trig_time = 0; // Most recent trigger time (microseconds)
 int trig_last = 0;     // What the last trigger read was
 
+uint32_t send_IP = IPAddress(192,168,1,255); //deafult is broadcast but update every time it recives a udp packet.
 
 // Send value to external MCP4821 DAC.
 // Similar to https://cyberblogspot.com/how-to-use-mcp4921-dac-with-arduino/
@@ -265,42 +266,35 @@ void loop() {
     Photo_diode_ADC = 0;
     Error_signal_ADC = 0;
     time_start = micros();
-    while (active){
-      //Check the trigger situation
-      trig_now = digitalRead(TRIG_PIN);
-      if (N==200){
-        //center of scan reaced. Mark index
-        trig_index = N;
-        //Serial.printf("Trig N = %d\n",trig_index);
-      }
-      if (N==400){
-        //end of scan reached. End measure
-        //Serial.printf("End Measure N = %d\n",N);
-        measure = false;
-        send_data = true; //request to send data
-        delayMicroseconds(10);
-        break;
-      }
-      if(N>CHANNEL_BUFFER_SIZE){
-        measure = false;
-        send_data = true; //request to send data
-        delayMicroseconds(10);
-        break;
-      }
-      //average ADC down while less than time_res
-      Photo_diode_ADC = ((uint16_t)analogRead(PD_INPUT_PIN) + Photo_diode_ADC*i)/(i+1);   // Photodiode
-      Error_signal_ADC = ((uint16_t)analogRead(LOCK_INPUT_PIN) + Error_signal_ADC*i)/(i+1);   // Error signal
-      if (micros()-time_start>=time_res){
-        //Serial.printf("i = %d\n",i);
-        //measurment point done. Store value and start again
-        input_buffer[2 * N] = (uint8_t)(Photo_diode_ADC >> 4);           // Photodiode
-        input_buffer[2 * N + 1] = (uint8_t)(Error_signal_ADC >> 4); // Error signal
-        //TODO: actualy record the times as well instead of assuming
-        active = false; //break out of the measurment
-      }
-      i++;
-      trig_last = trig_now; //set what the last trigger measure was.
+    //Check the trigger situation
+    trig_now = digitalRead(TRIG_PIN);
+    if (trig_last==0 && trig_now==1){
+      //center of scan reaced. Mark index
+      trig_index = N;
+      //Serial.printf("Trig N = %d\n",trig_index);
     }
+    if (trig_last==1 && trig_now==0){
+      //end of scan reached. End measure
+      //Serial.printf("End Measure N = %d\n",N);
+      measure = false;
+      send_data = true; //request to send data
+      delayMicroseconds(10);
+      break;
+    }
+    if(N>CHANNEL_BUFFER_SIZE){
+      measure = false;
+      send_data = true; //request to send data
+      delayMicroseconds(10);
+      break;
+    }
+    //average ADC down while less than time_res
+    Photo_diode_ADC = (uint16_t)analogRead(PD_INPUT_PIN);   // Photodiode
+    Error_signal_ADC = (uint16_t)analogRead(LOCK_INPUT_PIN);   // Error signal
+    //Serial.printf("i = %d\n",i);
+    //measurment point done. Store value and start again
+    input_buffer[2 * N] = (uint8_t)(Photo_diode_ADC >> 4);           // Photodiode
+    input_buffer[2 * N + 1] = (uint8_t)(Error_signal_ADC >> 4); // Error signal
+    trig_last = trig_now; //set what the last trigger measure was.
     N++;
     //Serial.printf("Data N = %d\n",N);
 
@@ -314,7 +308,8 @@ void loop() {
     //broadcast the data over UDP (we realy dont care if we miss a few packets, we just want the data fast.)
     //Serial.printf("Trig N = %d\n",trig_index);
     //broadcast to 192.169.1.255:9001
-    Udp.beginPacket(IPAddress(192,168,1,255), 9001);
+    //Udp.beginPacket(IPAddress(192,168,1,255), 9001);
+    Udp.beginPacket(send_IP, 9001)
     //packet structure first unit16 is remaining number of bytes
     uint8_t temp_array[2];
     uint16_t data_lengnth = N*2;
@@ -348,6 +343,7 @@ void loop() {
     if (packetSize)
     {
       // Read the received UDP packet data
+      send_IP = Udp.remoteIP(); //updates the remote IP to send data
       Udp.read(packetData,MAX_PACKET_SIZE);
       //Serial.println(packetData);
       //check that this starts with a # otherwise ignore it
@@ -361,13 +357,14 @@ void loop() {
     //clear out the packet
     packetData[0] = (char)0;
     // Start new packet
+    delay(10);
     N = 0;
     trig_time = 0;
     time_resolution = next_resolution;
     packet_start = micros();
     send_data = false;
-    trig_now=0;
-    trig_last=0;
-    delay(10);
+    trig_now=digitalRead(TRIG_PIN);;
+    trig_last=trig_now;
+    
   }
 }
