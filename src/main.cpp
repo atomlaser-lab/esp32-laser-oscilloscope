@@ -268,12 +268,12 @@ void loop() {
     while (active){
       //Check the trigger situation
       trig_now = digitalRead(TRIG_PIN);
-      if (N==200){
+      if (trig_last==0 && trig_now==1){
         //center of scan reaced. Mark index
         trig_index = N;
         //Serial.printf("Trig N = %d\n",trig_index);
       }
-      if (N==400){
+      if (trig_last==1 && trig_now==0){
         //end of scan reached. End measure
         //Serial.printf("End Measure N = %d\n",N);
         measure = false;
@@ -312,9 +312,9 @@ void loop() {
 
   if (send_data){
     //broadcast the data over UDP (we realy dont care if we miss a few packets, we just want the data fast.)
-    //Serial.printf("Trig N = %d\n",trig_index);
+    Serial.printf("Trig N = %d\n",trig_index);
     //broadcast to 192.169.1.255:9001
-    Udp.beginPacket(IPAddress(192,168,1,255), 9001);
+    Udp.beginPacket(IPAddress(192,168,1,2), 9001);
     //packet structure first unit16 is remaining number of bytes
     uint8_t temp_array[2];
     uint16_t data_lengnth = N*2;
@@ -361,13 +361,14 @@ void loop() {
     //clear out the packet
     packetData[0] = (char)0;
     // Start new packet
+    delay(10);
     N = 0;
     trig_time = 0;
     time_resolution = next_resolution;
     packet_start = micros();
     send_data = false;
-    trig_now=0;
-    trig_last=0;
-    delay(10);
+    trig_now=digitalRead(TRIG_PIN);;
+    trig_last=trig_now;
+    
   }
 }
