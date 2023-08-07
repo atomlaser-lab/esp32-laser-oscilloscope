@@ -11,3 +11,6 @@ include/
 
 ignore/
 **.asv
+MATLAB/Remote_lock
+MATLAB/Remote_lock_1
+MATLAB/*.prj
