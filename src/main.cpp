@@ -13,7 +13,7 @@ General notes:
 #include <WiFi.h>
 #include <WiFiUdp.h>
 
-#include <secrets.h> // in scr make a seacrets.h file and define the SSID and password MAke sure this is part of .gitignore
+#include <secrets.h> // in scr make a seacrets.h file and define the SSID and password Make sure this is part of .gitignore
 
 
 /* Pin mappings. With the Arduino framework, the pin number is the
@@ -42,6 +42,7 @@ bool slow_lock = false;
 bool fast_lock = false;
 bool hold = false;
 bool laser_on = false;
+bool scope_on = false;
 
 
 //ESP32 has 512kbit of RAM
@@ -113,6 +114,16 @@ void data_in(char* input){
     if(strcmp (input,"disable_slow")==0) {
     digitalWrite(SLOW_LOCK_PIN, LOW);
     Serial.println("unlocking slow");
+    return;
+  }
+    if(strcmp (input,"scope_off")==0) {
+    scope_on = false;
+    Serial.println("Scope Off");
+    return;
+  }
+    if(strcmp (input,"scope_on")==0) {
+    scope_on = true;
+    Serial.println("Scope On");
     return;
   }
   //now if possible convert to a number and then send to ADC
@@ -307,30 +318,31 @@ void loop() {
   if (send_data){
     //broadcast the data over UDP (we realy dont care if we miss a few packets, we just want the data fast.)
     //Serial.printf("Trig N = %d\n",trig_index);
-    //broadcast to 192.169.1.255:9001
-    //Udp.beginPacket(IPAddress(192,168,1,255), 9001);
-    Udp.beginPacket(send_IP, 9001)
-    //packet structure first unit16 is remaining number of bytes
-    uint8_t temp_array[2];
-    uint16_t data_lengnth = N*2;
-    temp_array[0]=data_lengnth & 0xff;
-    temp_array[1]=(data_lengnth >> 8);
-    Udp.write(temp_array[0]);
-    Udp.write(temp_array[1]);
+    if (scope_on){
+      //broadcast to 192.169.1.255:9001
+      //Udp.beginPacket(IPAddress(192,168,1,255), 9001);
+      Udp.beginPacket(send_IP, 9001);
+      //packet structure first unit16 is remaining number of bytes
+      uint8_t temp_array[2];
+      uint16_t data_lengnth = N*2;
+      temp_array[0]=data_lengnth & 0xff;
+      temp_array[1]=(data_lengnth >> 8);
+      Udp.write(temp_array[0]);
+      Udp.write(temp_array[1]);
 
-    //2nd uint16 is the trigger index
-    temp_array[0]=trig_index & 0xff;
-    temp_array[1]=(trig_index >> 8);
-    Udp.write(temp_array[0]);
-    Udp.write(temp_array[1]);
-    //the remaining is uint8 interleaved chan1 and 2
-    for (int i =0; i < 2*N; i++)
-    {
-      Udp.write(input_buffer[i]);
+      //2nd uint16 is the trigger index
+      temp_array[0]=trig_index & 0xff;
+      temp_array[1]=(trig_index >> 8);
+      Udp.write(temp_array[0]);
+      Udp.write(temp_array[1]);
+      //the remaining is uint8 interleaved chan1 and 2
+      for (int i =0; i < 2*N; i++)
+      {
+        Udp.write(input_buffer[i]);
+      }
+      Udp.endPacket();   
+      //Serial.printf("sent bytes: %d\n",(N+1)*2);
     }
-    Udp.endPacket();   
-    //Serial.printf("sent bytes: %d\n",(N+1)*2);
-    
 
     // Process received packet
     int packetSize = Udp.parsePacket();
