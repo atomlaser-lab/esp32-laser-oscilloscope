@@ -66,13 +66,28 @@ unsigned int N = 0;     // Datapoint index in current packet
 uint64_t trig_time = 0; // Most recent trigger time (microseconds)
 int trig_last = 0;     // What the last trigger read was
 
-uint32_t send_IP = IPAddress(192,168,1,255); //deafult is broadcast but update every time it recives a udp packet.
+uint32_t send_IP = IPAddress(192,168,1,1); //deafult is router but update every time it recives a udp packet.
+uint16_t last_ADC = 0; //store the current ADC value
+
+
+// Specify maximum UDP packet size
+#define MAX_PACKET_SIZE 512
+
+// Specify UDP port to listen on
+unsigned int localPort = 9999;
+
+// Create data array for storing the received UDP packet data payload
+char packetData[MAX_PACKET_SIZE];
+
+WiFiUDP Udp;
+
 
 // Send value to external MCP4821 DAC.
 // Similar to https://cyberblogspot.com/how-to-use-mcp4921-dac-with-arduino/
 // but the bytes sent have been adjusted so it works.
 void set12BitDAC(uint16_t value) {
   Serial.printf("ADC: %d\n", value);
+  last_ADC = value;
   uint16_t data = 0b0001000000000000 | value; // could go directly to secondByte
   // 4 config bits + most significant 4 value bits
   uint8_t firstByte = 0b00010000 | ((uint8_t)((value & 0xFFF) >> 8));
@@ -126,22 +141,44 @@ void data_in(char* input){
     Serial.println("Scope On");
     return;
   }
+    if(strcmp (input,"ping")==0) {
+      Serial.print("Pinged. Local IP Address: ");
+      Serial.println(WiFi.localIP());
+      //send IP address to ping pc
+      Udp.beginPacket(send_IP, 9001);
+      Udp.write('!'); //! for ip value
+      //send each IP address as a uint8
+      Udp.write(WiFi.localIP()[0]);
+      Udp.write(WiFi.localIP()[1]);
+      Udp.write(WiFi.localIP()[2]);
+      Udp.write(WiFi.localIP()[3]);
+      Udp.write(char(0));
+      Udp.endPacket();   
+    return;
+  }
+    if(strcmp (input,"ADC_value")==0) {
+      Serial.print("ADC value Request.\n");
+      Serial.printf("ADC: %d\n", last_ADC);
+      //send value to request pc
+      Udp.beginPacket(send_IP, 9001);
+      //send % to indicate scope data
+      Udp.write('&'); //&for adc value
+      uint8_t temp_array[2];
+      temp_array[0]=last_ADC & 0xff;
+      temp_array[1]=(last_ADC >> 8);
+      Udp.write(temp_array[0]);
+      Udp.write(temp_array[1]);
+      Udp.write(char(0));
+      Udp.endPacket();   
+    return;
+  }
   //now if possible convert to a number and then send to ADC
   uint16_t forADC = atoi(input);
   set12BitDAC(forADC);
 
 
 }
-// Specify maximum UDP packet size
-#define MAX_PACKET_SIZE 512
 
-// Specify UDP port to listen on
-unsigned int localPort = 9999;
-
-// Create data array for storing the received UDP packet data payload
-char packetData[MAX_PACKET_SIZE];
-
-WiFiUDP Udp;
 
 //#################################SETUP#############################################//
 
@@ -322,6 +359,9 @@ void loop() {
       //broadcast to 192.169.1.255:9001
       //Udp.beginPacket(IPAddress(192,168,1,255), 9001);
       Udp.beginPacket(send_IP, 9001);
+      //send % to indicate scope data
+      Udp.write('%');
+
       //packet structure first unit16 is remaining number of bytes
       uint8_t temp_array[2];
       uint16_t data_lengnth = N*2;
@@ -340,6 +380,7 @@ void loop() {
       {
         Udp.write(input_buffer[i]);
       }
+      Udp.write(char(0));
       Udp.endPacket();   
       //Serial.printf("sent bytes: %d\n",(N+1)*2);
     }
